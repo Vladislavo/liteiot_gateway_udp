@@ -1,0 +1,3 @@
+[submodule "lib/gateway_protocol"]
+	path = lib/gateway_protocol
+	url = http://lorca.act.uji.es/gitlab/vrykov/thso.gateway_protocol.git
