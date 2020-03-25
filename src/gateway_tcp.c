@@ -8,7 +8,7 @@
 
 #include<pthread.h>
 
-#include<lib/gateway_protocol/gateway_protocol.h>
+#include<gateway_protocol.h>
 
 #include<sys/time.h>
 
@@ -36,10 +36,12 @@ int main (int argc, char **argv) {
 
 	listen(server_desc, 3);
 
+	printf("liteninig...\n");
 	while ((client_desc = accept(server_desc, (struct sockaddr *) &client, &client_socklen))) {
 		//strncpy(buf, "Hello, client!", sizeof(buf));
 		//write(client_desc, buf, strlen(buf));
-
+		
+		printf("packet received!\n");
 		pthread_t thr;
 		if (pthread_create(&thr, NULL, connection_handler, (void *) &client_desc) < 0) {
 			perror("thread creation failed");
@@ -75,6 +77,7 @@ void *connection_handler(void *args) {
 					buf_len, buf))
 		{
 			if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_REQ) {
+				printf("TIME REQ received\n");
 				struct timeval tv;
 				buf_len = 0;
 				
@@ -89,7 +92,11 @@ void *connection_handler(void *args) {
 				buf_len += sizeof(uint32_t);
 
 				write(client_desc, buf, buf_len);
+			} else {
+				perror("packet type error");
 			}
+		} else {
+			perror("packet decode error");
 		}
 	}
 
