@@ -1,12 +1,12 @@
 CC 		= gcc
 
-INCLUDES 	= -Ilib/gateway_protocol
+INCLUDES 	= -I/usr/include/postgresql
 LFLAGS 		= -Llib
 
 LDIR		= lib
 LIBS 		= $(LDIR)/gateway_protocol/gateway_protocol
 
-LIBD		= -pthread
+LIBD		= -pthread -lpq
 
 SRC 		= src/gateway.c
 
@@ -18,7 +18,7 @@ MAIN 		= gateway
 
 $(LDIR)/gateway_protocol/gateway_protocol.o:
 	$(CC) -c $(LIBS)/gateway_protocol.c -o $(OBJ)/gateway_protocol.o -I$(LIBS)
-	$(CC) $(SRC) $(OBJ)/gateway_protocol.o -o $(MAIN) -I$(LIBS) $(LIBD)
+	$(CC) $(SRC) $(OBJ)/gateway_protocol.o -o $(MAIN) -I$(LIBS) $(LIBD) $(INCLUDES)
 
 
 all: $(MAIN)
