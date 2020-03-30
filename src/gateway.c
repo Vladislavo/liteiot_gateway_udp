@@ -126,46 +126,66 @@ int main (int argc, char **argv) {
 		        	if (gateway_protocol_data_send_payload_decode(&sensor_data, payload, payload_length)) {
 					PGresult *res;
 					snprintf(buf, sizeof(buf), "INSERT INTO esp32 VALUES("
-							"%lu, '%s', "
-							"%.2f, %.2f, "  // esp
-							"%.2f, %.2f, "
-							"%.2f, %.2f, "
-							"%.2f, %.2f, %.2f, "
-							"%.2f, "
-							"%.2f, "
-							"%.2f, %.2f, "  // mkr
-							"%.2f, %.2f, "
-							"%.2f, %.2f, "
-							"%.2f, "
-							"%.2f, %.2f, "  // wis
-							"%.2f, %.2f, "
-							"%.2f, %.2f, "
-							"%.2f, "
-							"%.2f)",
-							sensor_data.utc, sensor_data.timedate,
-							sensor_data.dht22_t_esp, sensor_data.dht22_h_esp,
-							sensor_data.sht85_t_esp, sensor_data.sht85_h_esp,
-							sensor_data.hih8121_t_esp, sensor_data.hih8121_h_esp,
-							sensor_data.tmp36_0_esp, sensor_data.tmp36_1_esp, sensor_data.tmp36_2_esp,
-							sensor_data.hih4030_esp,
-							sensor_data.hh10d_esp,
-							sensor_data.dht22_t_mkr, sensor_data.dht22_h_mkr,
-							sensor_data.sht85_t_mkr, sensor_data.sht85_h_mkr,
-							sensor_data.hih8121_t_mkr, sensor_data.hih8121_h_mkr,
-							sensor_data.hh10d_mkr,
-							sensor_data.dht22_t_wis, sensor_data.dht22_h_wis,
-							sensor_data.sht85_t_wis, sensor_data.sht85_h_wis,
-							sensor_data.hih8121_t_wis, sensor_data.hih8121_h_wis,
-							sensor_data.tmp102_wis,
-							sensor_data.hh10d_wis
-						);
+						"%lu, '%s', "
+						"%.2f, %.2f, "  // esp
+						"%.2f, %.2f, "
+						"%.2f, %.2f, "
+						"%.2f, %.2f, %.2f, "
+						"%.2f, "
+						"%.2f, "
+						"%.2f, %.2f, "  // mkr
+						"%.2f, %.2f, "
+						"%.2f, %.2f, "
+						"%.2f, "
+						"%.2f, %.2f, "  // wis
+						"%.2f, %.2f, "
+						"%.2f, %.2f, "
+						"%.2f, "
+						"%.2f)",
+						sensor_data.utc, sensor_data.timedate,
+						sensor_data.dht22_t_esp, sensor_data.dht22_h_esp,
+						sensor_data.sht85_t_esp, sensor_data.sht85_h_esp,
+						sensor_data.hih8121_t_esp, sensor_data.hih8121_h_esp,
+						sensor_data.tmp36_0_esp, sensor_data.tmp36_1_esp, sensor_data.tmp36_2_esp,
+						sensor_data.hih4030_esp,
+						sensor_data.hh10d_esp,
+						sensor_data.dht22_t_mkr, sensor_data.dht22_h_mkr,
+						sensor_data.sht85_t_mkr, sensor_data.sht85_h_mkr,
+						sensor_data.hih8121_t_mkr, sensor_data.hih8121_h_mkr,
+						sensor_data.hh10d_mkr,
+						sensor_data.dht22_t_wis, sensor_data.dht22_h_wis,
+						sensor_data.sht85_t_wis, sensor_data.sht85_h_wis,
+						sensor_data.hih8121_t_wis, sensor_data.hih8121_h_wis,
+						sensor_data.tmp102_wis,
+						sensor_data.hh10d_wis
+					);
 					//printf("%s\n", buf);
 					res = PQexec(conn, buf);
-					if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+					if (PQresultStatus(res) == PGRES_COMMAND_OK) {
+						PQclear(res);
 						fprintf(stderr, "%s\n", PQerrorMessage(conn));
+
+						sprintf(buf, "SELECT * FROM pend_msgs WHERE dev_id = %d", dev_id);
+						res = PQexec(conn, buf);
+						if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res)) {
+							buf[2] = GATEWAY_PROTOCOL_STAT_ACK_PEND;
+							printf("ACK_PEND prepared\n");
+						} else {
+							buf[2] = GATEWAY_PROTOCOL_STAT_ACK;
+							printf("ACK prepared\n");
+						}
+
+						buf[0] = dev_id;				
+						buf[1] = GATEWAY_PROTOCOL_PACKET_TYPE_STAT;
+						buf_len = 3;
 					}
 					PQclear(res);
 				} else {
+					buf[0] = dev_id;				
+					buf[1] = GATEWAY_PROTOCOL_PACKET_TYPE_STAT;
+					buf[2] = GATEWAY_PROTOCOL_STAT_NACK;
+					buf_len = 3;
+
 					printf("payload decode error\n");
 				}
 			} else if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ) {
