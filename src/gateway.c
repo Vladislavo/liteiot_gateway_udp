@@ -14,9 +14,11 @@
 
 #include<libpq-fe.h>
 
+#define TIMEDATE_LENGTH		32
+
 typedef struct {
 	uint32_t utc;
-	char timedate[32];
+	char timedate[TIMEDATE_LENGTH];
 
 	float dht22_t_esp;
 	float dht22_h_esp;
@@ -122,8 +124,9 @@ int main (int argc, char **argv) {
 				sensor_data_t sensor_data;
 				printf("DATA SEND received\n");
 		        	if (gateway_protocol_data_send_payload_decode(&sensor_data, payload, payload_length)) {
+					PGresult *res;
 					snprintf(buf, sizeof(buf), "INSERT INTO esp32 VALUES("
-							"%lu, %s, "
+							"%lu, '%s', "
 							"%.2f, %.2f, "  // esp
 							"%.2f, %.2f, "
 							"%.2f, %.2f, "
@@ -156,8 +159,12 @@ int main (int argc, char **argv) {
 							sensor_data.tmp102_wis,
 							sensor_data.hh10d_wis
 						);
-					printf("%.2f, %.2f, %.2f\n", sensor_data.hih8121_h_wis, sensor_data.tmp102_wis, sensor_data.hh10d_wis);
-					printf("%s\n", buf);
+					//printf("%s\n", buf);
+					res = PQexec(conn, buf);
+					if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+						fprintf(stderr, "%s\n", PQerrorMessage(conn));
+					}
+					PQclear(res);
 				} else {
 					printf("payload decode error\n");
 				}
@@ -189,7 +196,7 @@ uint8_t gateway_protocol_data_send_payload_decode(sensor_data_t *sensor_data, co
 
 	memcpy(&sensor_data->timedate, &payload[p_len], sizeof(sensor_data->timedate));
 	//p_len += sizeof(sensor_data->timedate);
-	p_len += 32;
+	p_len += TIMEDATE_LENGTH;
 
 
 	memcpy(&sensor_data->dht22_t_esp, &payload[p_len], sizeof(sensor_data->dht22_t_esp));
@@ -272,11 +279,11 @@ uint8_t gateway_protocol_data_send_payload_decode(sensor_data_t *sensor_data, co
 	memcpy(&sensor_data->hh10d_wis, &payload[p_len], sizeof(sensor_data->hh10d_wis));
 	p_len += sizeof(sensor_data->hh10d_wis);
 
-	printf("p_len = %d, payload_length = %d (float size %d)\n", p_len, payload_length, sizeof(float));
-
 	return (p_len == payload_length);
 }
 
+/* connection handler for multithreading version */
+#ifdef MULTITHREADING_VER
 void *connection_handler(void *args) {
 	int client_desc = *(int *)args;
 	
@@ -284,10 +291,6 @@ void *connection_handler(void *args) {
 	uint8_t buf_len = 0;
 	uint8_t payload[128];
 	uint8_t payload_length = 0;
-
-	//strncpy(buf, "connection handler greetings!", sizeof(buf));
-
-	//write(client_desc, buf, strlen(buf));
 
 	if ((buf_len = recv(client_desc, buf, sizeof(buf), 0)) > 0) {
 		uint8_t dev_id = 0xFF;
@@ -324,3 +327,4 @@ void *connection_handler(void *args) {
 	}
 
 }
+#endif
