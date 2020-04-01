@@ -14,6 +14,7 @@
 #include<signal.h>
 
 #define TIMEDATE_LENGTH		32
+#define PEND_SEND_RETRIES_MAX	5
 
 typedef struct {
 	uint32_t utc;
@@ -92,15 +93,11 @@ void ctrc_handler (int sig);
 static volatile uint8_t working = 1;
 
 int main (int argc, char **argv) {
-	//int server_desc, client_desc;
-       	//struct sockaddr_in server, client;
-	//socklen_t client_socklen;
 	gcom_ch_t gch;
 	uint8_t buf[1024];
 	uint8_t buf_len = 0;
 	uint8_t payload[256];
 	uint8_t payload_length = 0;
-	//int sock_len;
 	PGresult *res;
 	
 	signal(SIGINT, ctrc_handler);
@@ -198,35 +195,41 @@ int main (int argc, char **argv) {
 					PQclear(res);
 					printf("prepared to send %d bytes\n", payload_length);
 					
-					packet_encode(
-						gch.dev_id, 
-						GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND,
-						payload_length, payload,
-						&buf_len, buf);
+					// send the msg until ack is received
+					uint8_t received_ack = 0;
+					uint8_t pend_send_retries = PEND_SEND_RETRIES_MAX;
+					do {
+						packet_encode(
+							gch.dev_id, 
+							GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND,
+							payload_length, payload,
+							&buf_len, buf);
+	
+						send_gcom_ch(&gch, buf, buf_len);
+						recv_gcom_ch(&gch, buf, &buf_len, 1024);
 
-					send_gcom_ch(&gch, buf, buf_len);
-					recv_gcom_ch(&gch, buf, &buf_len, 1024);
-
-					if (packet_decode(
-						&gch.dev_id, 
-						&packet_type,
-						&payload_length, payload,
-						buf_len, buf)) 
-					{
-						if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
-							payload_length == 1 &&
-							payload[0] == GATEWAY_PROTOCOL_STAT_ACK)
+						if (packet_decode(
+							&gch.dev_id, 
+							&packet_type,
+							&buf_len, buf,
+							buf_len, buf)) 
 						{
-							sprintf(buf, "DELETE FROM pend_msgs WHERE dev_id = %d AND msg = '%s'", gch.dev_id, msg_cont);
-							printf("%s", buf);
-							res = PQexec(conn, buf);
-							if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-								fprintf(stderr, "error db deleting : %s", PQerrorMessage(conn));
+							if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
+								buf_len == 1 &&
+								buf[0] == GATEWAY_PROTOCOL_STAT_ACK)
+							{
+								sprintf(buf, "DELETE FROM pend_msgs WHERE dev_id = %d AND msg = '%s'", gch.dev_id, msg_cont);
+								printf("%s", buf);
+								res = PQexec(conn, buf);
+								if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+									fprintf(stderr, "error db deleting : %s", PQerrorMessage(conn));
+								}
+								PQclear(res);
+								received_ack = 1;
+								printf("ACK received\n");
 							}
-							PQclear(res);
-							printf("ACK received\n");
 						}
-					}
+					} while (!received_ack && pend_send_retries--);
 				}
 			} else {
 				fprintf(stderr, "packet type error : %02X\n", packet_type);
