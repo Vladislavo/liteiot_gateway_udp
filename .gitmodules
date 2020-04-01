@@ -1,3 +1,6 @@
 [submodule "lib/gateway_protocol"]
 	path = lib/gateway_protocol
 	url = http://lorca.act.uji.es/gitlab/vrykov/thso.gateway_protocol.git
+[submodule "lib/base64"]
+	path = lib/base64
+	url = https://github.com/zhicheng/base64.git

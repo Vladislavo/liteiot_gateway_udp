@@ -18,13 +18,14 @@ MAIN 		= gateway
 
 $(LDIR)/gateway_protocol/gateway_protocol.o:
 	$(CC) -c $(LIBS)/gateway_protocol.c -o $(OBJ)/gateway_protocol.o -I$(LIBS)
-	$(CC) $(SRC) $(OBJ)/gateway_protocol.o -o $(MAIN) -I$(LIBS) $(LIBD) $(INCLUDES)
+	$(CC) -c $(LDIR)/base64/base64.c -o $(OBJ)/base64.o -Ilib/base64
+	$(CC) $(SRC) $(OBJ)/gateway_protocol.o $(OBJ)/base64.o -o $(MAIN) -I$(LIBS) -Ilib/base64 $(LIBD) $(INCLUDES)
 
 
 all: $(MAIN)
 	@echo Compiling gateway project
 
-$(MAIN): $(OBJ)/gateway_protocol.o
+$(MAIN): $(OBJ)/gateway_protocol.o $(OBJ)/base64.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(MAIN) $(OBJS) $(LFLAGS) $(LIBS)
 
 .c.o:
