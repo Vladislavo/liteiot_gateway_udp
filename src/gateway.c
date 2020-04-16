@@ -13,8 +13,9 @@
 #include<math.h>
 #include<signal.h>
 
-#define TIMEDATE_LENGTH		32
-#define PEND_SEND_RETRIES_MAX	5
+#define TIMEDATE_LENGTH			32
+#define PEND_SEND_RETRIES_MAX		5
+#define GATEWAY_PROTOCOL_APP_KEY_SIZE	8
 
 typedef struct {
 	uint32_t utc;
@@ -65,7 +66,7 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 
 void * connection_handler (void *args);
 uint8_t gateway_protocol_data_send_payload_decode(sensor_data_t *sensor_data, const uint8_t *payload, const uint8_t payload_length);
-void prepare_di_query(sensor_data_t *sensor_data, char *q, uint16_t q_size); // data insert
+void prepare_di_query(gcom_ch_t *gch, sensor_data_t *sensor_data, char *q, uint16_t q_size); // data insert
 void filter_query(char *com);
 void packet_encode(
 	const uint8_t *app_key,
@@ -103,6 +104,8 @@ int main (int argc, char **argv) {
 	uint8_t payload_length = 0;
 	PGresult *res;
 	
+	memset(&gch, 0x0, sizeof(gch));
+
 	signal(SIGINT, ctrc_handler);
 
 	PGconn *conn = PQconnectdb("user=pi dbname=gateway");
@@ -187,18 +190,18 @@ int main (int argc, char **argv) {
 					fprintf(stderr, "payload decode error\n");
 				}
 			} else if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ) {
-				sprintf(buf, "SELECT * FROM pend_msgs WHERE app_key = %s AND dev_id = %d", 
+				sprintf(buf, "SELECT * FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d", 
 						(char *)gch.app_key, gch.dev_id);
 				res = PQexec(conn, buf);
 				if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res)) {
 					char msg_cont[150];
-					strncpy(msg_cont, PQgetvalue(res, 0, 1), sizeof(msg_cont));
-					printf("PEND_SEND prepared : %s\n", PQgetvalue(res, 0, 1));
-
-					base64_decode(PQgetvalue(res, 0, 1), strlen(PQgetvalue(res, 0, 1)), payload);
-					payload_length = BASE64_DECODE_OUT_SIZE(strlen(PQgetvalue(res, 0, 1)));
+					strncpy(msg_cont, PQgetvalue(res, 0, 2), sizeof(msg_cont));
+					printf("PEND_SEND prepared : %s\n", msg_cont);
 					PQclear(res);
-					printf("prepared to send %d bytes : %s\n", payload_length, (char *)payload);
+				
+					base64_decode(msg_cont, strlen(msg_cont)-1, payload);
+					payload_length = BASE64_DECODE_OUT_SIZE(strlen(msg_cont));
+					printf("prepared to send %d bytes : %s\n", payload_length, payload);
 					
 					// send the msg until ack is received
 					uint8_t received_ack = 0;
@@ -214,7 +217,7 @@ int main (int argc, char **argv) {
 						send_gcom_ch(&gch, buf, buf_len);
 						recv_gcom_ch(&gch, buf, &buf_len, 1024);
 
-						uint8_t recv_app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE];
+						uint8_t recv_app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE +1];
 						uint8_t recv_dev_id = 0xFF;
 						if (packet_decode(
 							recv_app_key,
@@ -223,13 +226,13 @@ int main (int argc, char **argv) {
 							&buf_len, buf,
 							buf_len, buf)) 
 						{
-							if (!memcpy(recv_app_key, gch.app_key, GATEWAY_PROTOCOL_APP_KEY_SIZE) &&
+							if (!memcmp(recv_app_key, gch.app_key, GATEWAY_PROTOCOL_APP_KEY_SIZE) &&
 								recv_dev_id == gch.dev_id &&
 								packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
 								buf_len == 1 &&
 								buf[0] == GATEWAY_PROTOCOL_STAT_ACK)
 							{
-								sprintf(buf, "DELETE FROM pend_msgs WHERE app_key = %s AND dev_id = %d AND msg = '%s'", (char *)gch.app_key, gch.dev_id, msg_cont);
+								sprintf(buf, "DELETE FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d AND msg = '%s'", (char *)gch.app_key, gch.dev_id, msg_cont);
 								printf("%s", buf);
 								res = PQexec(conn, buf);
 								if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -241,6 +244,8 @@ int main (int argc, char **argv) {
 							}
 						}
 					} while (!received_ack && pend_send_retries--);
+				} else {
+					printf("nothing for app %s dev %d\n", (char *)gch.app_key, gch.dev_id);
 				}
 			} else {
 				fprintf(stderr, "packet type error : %02X\n", packet_type);
@@ -394,7 +399,7 @@ void prepare_di_query(gcom_ch_t *gch, sensor_data_t *sensor_data, char *q, uint1
 				"\"tmp102_wis\" : %.2f, "
 				"\"hh10d_wis\" : %.2f"
 			"}'"	
-		")"
+		")",
 		(char *)gch->app_key, gch->dev_id,
 		sensor_data->utc, sensor_data->timedate,
 		sensor_data->dht22_t_esp, sensor_data->dht22_h_esp,
@@ -417,7 +422,7 @@ void prepare_di_query(gcom_ch_t *gch, sensor_data_t *sensor_data, char *q, uint1
 
 void filter_query(char *q) {
 	char *pchr;
-	const char nanstr[] = "'NaN'";
+	const char nanstr[] = "\"NaN\"";
 
 	while((pchr = strstr(q, "nan"))) {
 		memmove(&pchr[5], &pchr[3], strlen(pchr)+1);
@@ -469,6 +474,8 @@ uint8_t packet_decode(
 	
 	memcpy(app_key, &packet[p_len], GATEWAY_PROTOCOL_APP_KEY_SIZE);
 	p_len += GATEWAY_PROTOCOL_APP_KEY_SIZE;
+	
+	app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE] = '\0';
 
 	*dev_id = packet[p_len];
 	p_len++;
@@ -495,14 +502,14 @@ void gateway_protocol_mk_stat(
 		gch->app_key,
 		gch->dev_id,
 		GATEWAY_PROTOCOL_PACKET_TYPE_STAT,
-		1, &stat,
+		1, (uint8_t *)&stat,
 		pck_len, pck);
 }
 
 
 
 void send_utc(gcom_ch_t *gch) {
-	uint8_t buf[10];
+	uint8_t buf[50];
 	uint8_t buf_len = 0;
 	struct timeval tv;
 				
