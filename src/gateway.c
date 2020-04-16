@@ -364,57 +364,54 @@ uint8_t gateway_protocol_data_send_payload_decode(
 
 void prepare_di_query(gcom_ch_t *gch, sensor_data_t *sensor_data, char *q, uint16_t q_size) {
 	snprintf(q, q_size, 
-		"INSERT INTO dev_%s_%d ("
-			"utc, timedate, "
-			"dht22_t_esp, dht22_h_esp, "
-			"sht85_t_esp, sht85_h_esp, "
-			"hih8121_t_esp, hih8121_h_esp, "
-			"tmp36_0_esp, tmp36_1_esp, tmp36_2_esp, "
-			"hih4030_esp, "
-			"hh10d_esp, "
-			"dht22_t_mkr, dht22_h_mkr, "
-			"sht85_t_mkr, sht85_h_mkr, "
-			"hih8121_t_mkr, hih8121_h_mkr, "
-			"hh10d_mkr, "
-			"dht22_t_wis, dht22_h_wis, "
-			"sht85_t_wis, sht85_h_wis, "
-			"hih8121_t_wis, hih8121_h_wis, "
-			"tmp102_wis, "
-			"hh10d_wis) "
-		"VALUES("
+		"INSERT INTO dev_%s_%d VALUES ("
 			"%lu, '%s', "
-			"%.2f, %.2f, "  // esp
-			"%.2f, %.2f, "
-			"%.2f, %.2f, "
-			"%.2f, %.2f, %.2f, "
-			"%.2f, "
-			"%.2f, "
-			"%.2f, %.2f, "  // mkr
-			"%.2f, %.2f, "
-			"%.2f, %.2f, "
-			"%.2f, "
-			"%.2f, %.2f, "  // wis
-			"%.2f, %.2f, "
-			"%.2f, %.2f, "
-			"%.2f, "
-			"%.2f)",
-			(char *)gch->app_key, gch->dev_id,
-			sensor_data->utc, sensor_data->timedate,
-			sensor_data->dht22_t_esp, sensor_data->dht22_h_esp,
-			sensor_data->sht85_t_esp, sensor_data->sht85_h_esp,
-			sensor_data->hih8121_t_esp, sensor_data->hih8121_h_esp,
-			sensor_data->tmp36_0_esp, sensor_data->tmp36_1_esp, sensor_data->tmp36_2_esp,
-			sensor_data->hih4030_esp,
-			sensor_data->hh10d_esp,
-			sensor_data->dht22_t_mkr, sensor_data->dht22_h_mkr,
-			sensor_data->sht85_t_mkr, sensor_data->sht85_h_mkr,
-			sensor_data->hih8121_t_mkr, sensor_data->hih8121_h_mkr,
-			sensor_data->hh10d_mkr,
-			sensor_data->dht22_t_wis, sensor_data->dht22_h_wis,
-			sensor_data->sht85_t_wis, sensor_data->sht85_h_wis,
-			sensor_data->hih8121_t_wis, sensor_data->hih8121_h_wis,
-			sensor_data->tmp102_wis,
-			sensor_data->hh10d_wis
+			"'{ "
+				"\"dht22_t_esp\" : %.2f, "
+				"\"dht22_h_esp\" : %.2f, "
+				"\"sht85_t_esp\" : %.2f, "
+				"\"sht85_h_esp\" : %.2f, "
+				"\"hih8121_t_esp\" : %.2f, "
+				"\"hih8121_h_esp\" : %.2f, "
+				"\"tmp36_0_esp\" : %.2f, "
+				"\"tmp36_1_esp\" : %.2f, "
+				"\"tmp36_2_esp\" : %.2f, "
+				"\"hih4030_esp\" : %.2f, "
+				"\"hh10d_esp\" : %.2f, "
+				"\"dht22_t_mkr\" : %.2f, "
+				"\"dht22_h_mkr\" : %.2f, "
+				"\"sht85_t_mkr\" : %.2f, "
+				"\"sht85_h_mkr\" : %.2f, "
+				"\"hih8121_t_mkr\" : %.2f, "
+				"\"hih8121_h_mkr\" : %.2f, "
+				"\"hh10d_mkr\" : %.2f, "
+				"\"dht22_t_wis\" : %.2f, "
+				"\"dht22_h_wis\" : %.2f, "
+				"\"sht85_t_wis\" : %.2f, "
+				"\"sht85_h_wis\" : %.2f, "
+				"\"hih8121_t_wis\" : %.2f, "
+				"\"hih8121_h_wis\" : %.2f, "
+				"\"tmp102_wis\" : %.2f, "
+				"\"hh10d_wis\" : %.2f"
+			"}'"	
+		")"
+		(char *)gch->app_key, gch->dev_id,
+		sensor_data->utc, sensor_data->timedate,
+		sensor_data->dht22_t_esp, sensor_data->dht22_h_esp,
+		sensor_data->sht85_t_esp, sensor_data->sht85_h_esp,
+		sensor_data->hih8121_t_esp, sensor_data->hih8121_h_esp,
+		sensor_data->tmp36_0_esp, sensor_data->tmp36_1_esp, sensor_data->tmp36_2_esp,
+		sensor_data->hih4030_esp,
+		sensor_data->hh10d_esp,
+		sensor_data->dht22_t_mkr, sensor_data->dht22_h_mkr,
+		sensor_data->sht85_t_mkr, sensor_data->sht85_h_mkr,
+		sensor_data->hih8121_t_mkr, sensor_data->hih8121_h_mkr,
+		sensor_data->hh10d_mkr,
+		sensor_data->dht22_t_wis, sensor_data->dht22_h_wis,
+		sensor_data->sht85_t_wis, sensor_data->sht85_h_wis,
+		sensor_data->hih8121_t_wis, sensor_data->hih8121_h_wis,
+		sensor_data->tmp102_wis,
+		sensor_data->hh10d_wis
 	);
 }
 
