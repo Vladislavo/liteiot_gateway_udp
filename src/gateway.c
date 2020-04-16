@@ -6,7 +6,7 @@
 #include<unistd.h>
 #include<stdint.h>
 #include<pthread.h>
-#include<gateway_protocol.h>
+#include"gateway_protocol.h"
 #include<sys/time.h>
 #include<libpq-fe.h>
 #include"base64.h"
@@ -51,6 +51,7 @@ typedef struct {
 } sensor_data_t;
 
 typedef struct {
+	uint8_t app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE +1];
 	uint8_t dev_id;
 	int server_desc;
 	int client_desc;
@@ -67,19 +68,21 @@ uint8_t gateway_protocol_data_send_payload_decode(sensor_data_t *sensor_data, co
 void prepare_di_query(sensor_data_t *sensor_data, char *q, uint16_t q_size); // data insert
 void filter_query(char *com);
 void packet_encode(
-	uint8_t dev_id, 
-	gateway_protocol_packet_type_t p_type, 
-	uint8_t payload_length,
-	uint8_t *payload,
+	const uint8_t *app_key,
+	const uint8_t dev_id, 
+	const gateway_protocol_packet_type_t p_type, 
+	const uint8_t payload_length,
+	const uint8_t *payload,
 	uint8_t *packet_length,
 	uint8_t *packet);
 uint8_t packet_decode(
+	uint8_t *app_key,
 	uint8_t *dev_id,
 	gateway_protocol_packet_type_t *ptype,
 	uint8_t *payload_length,
 	uint8_t *payload,
-	uint8_t packet_length,
-	uint8_t *packet);
+	const uint8_t packet_length,
+	const uint8_t *packet);
 
 void gateway_protocol_mk_stat(
 	gcom_ch_t *gch,
@@ -102,7 +105,7 @@ int main (int argc, char **argv) {
 	
 	signal(SIGINT, ctrc_handler);
 
-	PGconn *conn = PQconnectdb("user=root dbname=gateway");
+	PGconn *conn = PQconnectdb("user=pi dbname=gateway");
 	if (PQstatus(conn) == CONNECTION_BAD) {
 		printf("connection to db error: %s\n", PQerrorMessage(conn));
 		return EXIT_FAILURE;
@@ -131,11 +134,12 @@ int main (int argc, char **argv) {
 		
 		recv_gcom_ch(&gch, buf, &buf_len, 1024);
 
-		if (gateway_protocol_packet_decode(
-					&gch.dev_id,
-					&packet_type,
-					&payload_length, payload,
-					buf_len, buf))
+		if (packet_decode(
+			gch.app_key,
+			&gch.dev_id,
+			&packet_type,
+			&payload_length, payload,
+			buf_len, buf))
 		{
 			if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_REQ) {
 				printf("TIME REQ received\n");
@@ -144,7 +148,7 @@ int main (int argc, char **argv) {
 				sensor_data_t sensor_data;
 				printf("DATA SEND received\n");
 		        	if (gateway_protocol_data_send_payload_decode(&sensor_data, payload, payload_length)) {
-					prepare_di_query(&sensor_data, buf, sizeof(buf));
+					prepare_di_query(&gch, &sensor_data, buf, sizeof(buf));
 					filter_query(buf);
 					printf("%s\n", buf);
 					res = PQexec(conn, buf);
@@ -183,7 +187,8 @@ int main (int argc, char **argv) {
 					fprintf(stderr, "payload decode error\n");
 				}
 			} else if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ) {
-				sprintf(buf, "SELECT * FROM pend_msgs WHERE dev_id = %d", gch.dev_id);
+				sprintf(buf, "SELECT * FROM pend_msgs WHERE app_key = %s AND dev_id = %d", 
+						(char *)gch.app_key, gch.dev_id);
 				res = PQexec(conn, buf);
 				if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res)) {
 					char msg_cont[150];
@@ -193,13 +198,14 @@ int main (int argc, char **argv) {
 					base64_decode(PQgetvalue(res, 0, 1), strlen(PQgetvalue(res, 0, 1)), payload);
 					payload_length = BASE64_DECODE_OUT_SIZE(strlen(PQgetvalue(res, 0, 1)));
 					PQclear(res);
-					printf("prepared to send %d bytes\n", payload_length);
+					printf("prepared to send %d bytes : %s\n", payload_length, (char *)payload);
 					
 					// send the msg until ack is received
 					uint8_t received_ack = 0;
 					uint8_t pend_send_retries = PEND_SEND_RETRIES_MAX;
 					do {
 						packet_encode(
+							gch.app_key,
 							gch.dev_id, 
 							GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND,
 							payload_length, payload,
@@ -208,17 +214,22 @@ int main (int argc, char **argv) {
 						send_gcom_ch(&gch, buf, buf_len);
 						recv_gcom_ch(&gch, buf, &buf_len, 1024);
 
+						uint8_t recv_app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE];
+						uint8_t recv_dev_id = 0xFF;
 						if (packet_decode(
-							&gch.dev_id, 
+							recv_app_key,
+							&recv_dev_id, 
 							&packet_type,
 							&buf_len, buf,
 							buf_len, buf)) 
 						{
-							if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
+							if (!memcpy(recv_app_key, gch.app_key, GATEWAY_PROTOCOL_APP_KEY_SIZE) &&
+								recv_dev_id == gch.dev_id &&
+								packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
 								buf_len == 1 &&
 								buf[0] == GATEWAY_PROTOCOL_STAT_ACK)
 							{
-								sprintf(buf, "DELETE FROM pend_msgs WHERE dev_id = %d AND msg = '%s'", gch.dev_id, msg_cont);
+								sprintf(buf, "DELETE FROM pend_msgs WHERE app_key = %s AND dev_id = %d AND msg = '%s'", (char *)gch.app_key, gch.dev_id, msg_cont);
 								printf("%s", buf);
 								res = PQexec(conn, buf);
 								if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -345,65 +356,66 @@ uint8_t gateway_protocol_data_send_payload_decode(
 	memcpy(&sensor_data->hh10d_wis, &payload[p_len], sizeof(sensor_data->hh10d_wis));
 	p_len += sizeof(sensor_data->hh10d_wis);
 
-	//printf("p_len = %d, payload_length = %d\n", p_len, payload_length);
+	printf("p_len = %d, payload_length = %d\n", p_len, payload_length);
 				
 
 	return (p_len == payload_length);
 }
 
-void prepare_di_query(sensor_data_t *sensor_data, char *q, uint16_t q_size) {
-	snprintf(q, q_size, "INSERT INTO esp32 ("
-					"utc, timedate, "
-					"dht22_t_esp, dht22_h_esp, "
-					"sht85_t_esp, sht85_h_esp, "
-					"hih8121_t_esp, hih8121_h_esp, "
-					"tmp36_0_esp, tmp36_1_esp, tmp36_2_esp, "
-					"hih4030_esp, "
-					"hh10d_esp, "
-					"dht22_t_mkr, dht22_h_mkr, "
-					"sht85_t_mkr, sht85_h_mkr, "
-					"hih8121_t_mkr, hih8121_h_mkr, "
-					"hh10d_mkr, "
-					"dht22_t_wis, dht22_h_wis, "
-					"sht85_t_wis, sht85_h_wis, "
-					"hih8121_t_wis, hih8121_h_wis, "
-					"tmp102_wis, "
-					"hh10d_wis) "
-					"VALUES("
-					"%lu, '%s', "
-					"%.2f, %.2f, "  // esp
-					"%.2f, %.2f, "
-					"%.2f, %.2f, "
-					"%.2f, %.2f, %.2f, "
-					"%.2f, "
-					"%.2f, "
-					"%.2f, %.2f, "  // mkr
-					"%.2f, %.2f, "
-					"%.2f, %.2f, "
-					"%.2f, "
-					"%.2f, %.2f, "  // wis
-					"%.2f, %.2f, "
-					"%.2f, %.2f, "
-					"%.2f, "
-					"%.2f)",
-					sensor_data->utc, sensor_data->timedate,
-					sensor_data->dht22_t_esp, sensor_data->dht22_h_esp,
-					sensor_data->sht85_t_esp, sensor_data->sht85_h_esp,
-					sensor_data->hih8121_t_esp, sensor_data->hih8121_h_esp,
-					sensor_data->tmp36_0_esp, sensor_data->tmp36_1_esp, sensor_data->tmp36_2_esp,
-					sensor_data->hih4030_esp,
-					sensor_data->hh10d_esp,
-					sensor_data->dht22_t_mkr, sensor_data->dht22_h_mkr,
-					sensor_data->sht85_t_mkr, sensor_data->sht85_h_mkr,
-					sensor_data->hih8121_t_mkr, sensor_data->hih8121_h_mkr,
-					sensor_data->hh10d_mkr,
-					sensor_data->dht22_t_wis, sensor_data->dht22_h_wis,
-					sensor_data->sht85_t_wis, sensor_data->sht85_h_wis,
-					sensor_data->hih8121_t_wis, sensor_data->hih8121_h_wis,
-					sensor_data->tmp102_wis,
-					sensor_data->hh10d_wis
-				);
-
+void prepare_di_query(gcom_ch_t *gch, sensor_data_t *sensor_data, char *q, uint16_t q_size) {
+	snprintf(q, q_size, 
+		"INSERT INTO dev_%s_%d ("
+			"utc, timedate, "
+			"dht22_t_esp, dht22_h_esp, "
+			"sht85_t_esp, sht85_h_esp, "
+			"hih8121_t_esp, hih8121_h_esp, "
+			"tmp36_0_esp, tmp36_1_esp, tmp36_2_esp, "
+			"hih4030_esp, "
+			"hh10d_esp, "
+			"dht22_t_mkr, dht22_h_mkr, "
+			"sht85_t_mkr, sht85_h_mkr, "
+			"hih8121_t_mkr, hih8121_h_mkr, "
+			"hh10d_mkr, "
+			"dht22_t_wis, dht22_h_wis, "
+			"sht85_t_wis, sht85_h_wis, "
+			"hih8121_t_wis, hih8121_h_wis, "
+			"tmp102_wis, "
+			"hh10d_wis) "
+		"VALUES("
+			"%lu, '%s', "
+			"%.2f, %.2f, "  // esp
+			"%.2f, %.2f, "
+			"%.2f, %.2f, "
+			"%.2f, %.2f, %.2f, "
+			"%.2f, "
+			"%.2f, "
+			"%.2f, %.2f, "  // mkr
+			"%.2f, %.2f, "
+			"%.2f, %.2f, "
+			"%.2f, "
+			"%.2f, %.2f, "  // wis
+			"%.2f, %.2f, "
+			"%.2f, %.2f, "
+			"%.2f, "
+			"%.2f)",
+			(char *)gch->app_key, gch->dev_id,
+			sensor_data->utc, sensor_data->timedate,
+			sensor_data->dht22_t_esp, sensor_data->dht22_h_esp,
+			sensor_data->sht85_t_esp, sensor_data->sht85_h_esp,
+			sensor_data->hih8121_t_esp, sensor_data->hih8121_h_esp,
+			sensor_data->tmp36_0_esp, sensor_data->tmp36_1_esp, sensor_data->tmp36_2_esp,
+			sensor_data->hih4030_esp,
+			sensor_data->hh10d_esp,
+			sensor_data->dht22_t_mkr, sensor_data->dht22_h_mkr,
+			sensor_data->sht85_t_mkr, sensor_data->sht85_h_mkr,
+			sensor_data->hih8121_t_mkr, sensor_data->hih8121_h_mkr,
+			sensor_data->hh10d_mkr,
+			sensor_data->dht22_t_wis, sensor_data->dht22_h_wis,
+			sensor_data->sht85_t_wis, sensor_data->sht85_h_wis,
+			sensor_data->hih8121_t_wis, sensor_data->hih8121_h_wis,
+			sensor_data->tmp102_wis,
+			sensor_data->hh10d_wis
+	);
 }
 
 void filter_query(char *q) {
@@ -421,14 +433,18 @@ void filter_query(char *q) {
 
 
 void packet_encode(
-	uint8_t dev_id, 
-	gateway_protocol_packet_type_t p_type, 
-	uint8_t payload_length,
-	uint8_t *payload,
+	const uint8_t *app_key,
+	const uint8_t dev_id, 
+	const gateway_protocol_packet_type_t p_type, 
+	const uint8_t payload_length,
+	const uint8_t *payload,
 	uint8_t *packet_length,
 	uint8_t *packet) 
 {
 	*packet_length = 0;
+	
+	memcpy(&packet[*packet_length], app_key, GATEWAY_PROTOCOL_APP_KEY_SIZE);
+	*packet_length += GATEWAY_PROTOCOL_APP_KEY_SIZE;
 
 	packet[*packet_length] = dev_id;
 	(*packet_length)++;
@@ -444,14 +460,18 @@ void packet_encode(
 }
 
 uint8_t packet_decode(
+	uint8_t *app_key,
 	uint8_t *dev_id,
 	gateway_protocol_packet_type_t *ptype,
 	uint8_t *payload_length,
 	uint8_t *payload,
-	uint8_t packet_length,
-	uint8_t *packet)
+	const uint8_t packet_length,
+	const uint8_t *packet)
 {
 	uint8_t p_len = 0;
+	
+	memcpy(app_key, &packet[p_len], GATEWAY_PROTOCOL_APP_KEY_SIZE);
+	p_len += GATEWAY_PROTOCOL_APP_KEY_SIZE;
 
 	*dev_id = packet[p_len];
 	p_len++;
@@ -474,11 +494,12 @@ void gateway_protocol_mk_stat(
 	uint8_t *pck,
 	uint8_t *pck_len)
 {
-	pck[0] = gch->dev_id;
-	pck[1] = GATEWAY_PROTOCOL_PACKET_TYPE_STAT;
-	pck[2] = 1;
-	pck[3] = stat;
-	*pck_len = 4;
+	packet_encode(
+		gch->app_key,
+		gch->dev_id,
+		GATEWAY_PROTOCOL_PACKET_TYPE_STAT,
+		1, &stat,
+		pck_len, pck);
 }
 
 
@@ -491,6 +512,7 @@ void send_utc(gcom_ch_t *gch) {
 	gettimeofday(&tv, NULL);
 				
 	packet_encode (
+		gch->app_key,
 		gch->dev_id,
 		GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND,
 		sizeof(tv.tv_sec), (uint8_t *)&tv.tv_sec,
@@ -538,7 +560,7 @@ void *connection_handler(void *args) {
 		uint8_t dev_id = 0xFF;
 		gateway_protocol_packet_type_t packet_type;
 		
-		if (gateway_protocol_packet_decode(
+		if (gateway_protocol_packet_decode(	
 					&dev_id,
 					&packet_type,
 					&payload_length, payload,

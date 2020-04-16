@@ -4,7 +4,7 @@ CREATE DATABASE gateway;
 
 \c gateway
 
-ALTER DATABASE gateway OWNER TO root;
+ALTER DATABASE gateway OWNER TO pi;
 
 CREATE TABLE esp32 (
     utc numeric(10,0),
@@ -38,7 +38,7 @@ CREATE TABLE esp32 (
 );
 
 
-ALTER TABLE esp32 OWNER TO root;
+ALTER TABLE esp32 OWNER TO pi;
 
 --
 -- Name: pend_msgs; Type: TABLE; Schema: public; Owner: root
@@ -50,7 +50,7 @@ CREATE TABLE pend_msgs (
 );
 
 
-ALTER TABLE pend_msgs OWNER TO root;
+ALTER TABLE pend_msgs OWNER TO pi;
 
 
 
