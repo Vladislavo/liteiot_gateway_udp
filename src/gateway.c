@@ -190,7 +190,7 @@ int main (int argc, char **argv) {
 					fprintf(stderr, "payload decode error\n");
 				}
 			} else if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ) {
-				sprintf(buf, "SELECT * FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d", 
+				sprintf(buf, "SELECT * FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d AND ack = False", 
 						(char *)gch.app_key, gch.dev_id);
 				res = PQexec(conn, buf);
 				if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res)) {
@@ -232,7 +232,8 @@ int main (int argc, char **argv) {
 								buf_len == 1 &&
 								buf[0] == GATEWAY_PROTOCOL_STAT_ACK)
 							{
-								sprintf(buf, "DELETE FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d AND msg = '%s'", (char *)gch.app_key, gch.dev_id, msg_cont);
+								//sprintf(buf, "DELETE FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d AND msg = '%s'", (char *)gch.app_key, gch.dev_id, msg_cont);
+								sprintf(buf, "UPDATE pend_msgs SET ack = True WHERE app_key = '%s' AND dev_id = %d AND msg = '%s'", (char *)gch.app_key, gch.dev_id, msg_cont);
 								printf("%s", buf);
 								res = PQexec(conn, buf);
 								if (PQresultStatus(res) != PGRES_COMMAND_OK) {

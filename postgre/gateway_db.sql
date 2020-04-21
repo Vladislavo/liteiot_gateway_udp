@@ -45,8 +45,10 @@ ALTER TABLE esp32 OWNER TO pi;
 --
 
 CREATE TABLE pend_msgs (
+    app_key VARCHAR(30 NOT NULL,
     dev_id numeric(3,0) NOT NULL,
-    msg bytea
+    msg VARCHAR(150),
+    ack BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 
