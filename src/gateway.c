@@ -110,7 +110,7 @@ int main (int argc, char **argv) {
 	}
 
 	gch.server.sin_family 		= AF_INET;
-	gch.server.sin_port		= htons(54345);
+	gch.server.sin_port		= htons(54445);
 	gch.server.sin_addr.s_addr 	= INADDR_ANY;
 
 	if (bind(gch.server_desc, (struct sockaddr *) &gch.server, sizeof(gch.server)) < 0) {
@@ -126,15 +126,15 @@ int main (int argc, char **argv) {
 	pthread_mutex_init(&mutex, NULL);
 	
 	while (working) {
-		gcom_ch_request_t req;
-		memset(&req, 0x0, sizeof(gcom_ch_request_t));
-		memcpy(&(req.gch), &gch, sizeof(gcom_ch_t));
+		gcom_ch_request_t *req = (gcom_ch_request_t *)malloc(sizeof(gcom_ch_request_t));
+		memset(req, 0x0, sizeof(gcom_ch_request_t));
+		memcpy(&req->gch, &gch, sizeof(gcom_ch_t));
 	
 		printf("listenninig...\n");
-		req.gch.sock_len = sizeof(req.gch.client);
+		req->gch.sock_len = sizeof(req->gch.client);
 		
-		if (recv_gcom_ch(&req.gch, req.packet, &req.packet_length, DEVICE_DATA_MAX_LENGTH)) {
-			task_queue_enqueue(tq, process_packet, &req);
+		if (recv_gcom_ch(&req->gch, req->packet, &req->packet_length, DEVICE_DATA_MAX_LENGTH)) {
+			task_queue_enqueue(tq, process_packet, req);
 		} else {
 			
 			fprintf(stderr, "payload decode error\n");
@@ -339,6 +339,8 @@ void process_packet(void *request) {
 	} else {
 		fprintf(stderr, "payload decode error\n");
 	}
+	
+	free(req);
 }
 
 void gateway_protocol_data_send_payload_decode(
@@ -466,6 +468,7 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 	} else {
 		*pck_length = ret;
 	}
+	
 	return ret;
 }
 /* connection handler for multithreading version */
