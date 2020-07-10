@@ -51,7 +51,6 @@ typedef struct {
 } gcom_ch_request_t;
 
 /* for multithreading impl */
-void * connection_handler (void *args);
 void process_packet(void *request);
 
 int send_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t pck_size);
@@ -110,7 +109,7 @@ int main (int argc, char **argv) {
 	}
 
 	gch.server.sin_family 		= AF_INET;
-	gch.server.sin_port		= htons(54445);
+	gch.server.sin_port		= htons(54345);
 	gch.server.sin_addr.s_addr 	= INADDR_ANY;
 
 	if (bind(gch.server_desc, (struct sockaddr *) &gch.server, sizeof(gch.server)) < 0) {
@@ -471,49 +470,3 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 	
 	return ret;
 }
-/* connection handler for multithreading version */
-#ifdef MULTITHREADING_VER
-void *connection_handler(void *args) {
-	int client_desc = *(int *)args;
-	
-	uint8_t buf[128] = "";
-	uint8_t buf_len = 0;
-	uint8_t payload[128];
-	uint8_t payload_length = 0;
-
-	if ((buf_len = recv(client_desc, buf, sizeof(buf), 0)) > 0) {
-		uint8_t dev_id = 0xFF;
-		gateway_protocol_packet_type_t packet_type;
-		
-		if (gateway_protocol_packet_decode(	
-					&dev_id,
-					&packet_type,
-					&payload_length, payload,
-					buf_len, buf))
-		{
-			if (packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_TIME_REQ) {
-				printf("TIME REQ received\n");
-				struct timeval tv;
-				buf_len = 0;
-				
-				buf[0] = dev_id;
-				buf_len++;
-
-				buf[1] = GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND;
-				buf_len++;
-
-				gettimeofday(&tv, NULL);
-				memcpy(&buf[buf_len], &tv.tv_sec, sizeof(uint32_t));
-				buf_len += sizeof(uint32_t);
-
-				write(client_desc, buf, buf_len);
-			} else {
-				perror("packet type error");
-			}
-		} else {
-			perror("packet decode error");
-		}
-	}
-
-}
-#endif
