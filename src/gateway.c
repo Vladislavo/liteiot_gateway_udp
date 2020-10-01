@@ -255,66 +255,30 @@ void process_packet(void *request) {
 				// send the msg until ack is received
 				uint8_t received_ack = 0;
 				uint8_t pend_send_retries = PEND_SEND_RETRIES_MAX;
-				struct timeval tv;
-				tv.tv_sec = 0;
-				tv.tv_usec = 300000; // 300ms ack recv timeout
+				packet_encode(
+					req->gch.app_key,
+					req->gch.dev_id, 
+					GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND,
+					payload_length, payload,
+					&(req->packet_length), req->packet);
 				do {
-					packet_encode(
-						req->gch.app_key,
-						req->gch.dev_id, 
-						GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND,
-						payload_length, payload,
-						&(req->packet_length), req->packet);
-
 					send_gcom_ch(&(req->gch), req->packet, req->packet_length);
-					// set timeout
-					if (setsockopt(req->gch.server_desc, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-						perror("setsockopt error");
-					}
-					if (recv_gcom_ch(&(req->gch), 
-						req->packet, 
-						&(req->packet_length),
-						DEVICE_DATA_MAX_LENGTH) > 9)
-					{ /* min packet size. timeout -> -1 */
-						uint8_t recv_app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE +1];
-						uint8_t recv_dev_id = 0xFF;
-						if (packet_decode(
-							recv_app_key,
-							&recv_dev_id, 
-							&(req->packet_type),
-							&(req->packet_length), req->packet,
-							req->packet_length, req->packet)) 
-						{
-							if (!memcmp(recv_app_key, req->gch.app_key, GATEWAY_PROTOCOL_APP_KEY_SIZE) &&
-								recv_dev_id == req->gch.dev_id &&
-								req->packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT &&
-								req->packet_length == 1 &&
-								req->packet[0] == GATEWAY_PROTOCOL_STAT_ACK)
-							{
-								snprintf(db_query, sizeof(db_query),
-								 	"UPDATE pend_msgs SET ack = True WHERE app_key = '%s' AND dev_id = %d AND msg = '%s'", 
-									(char *)req->gch.app_key, req->gch.dev_id, msg_cont
-								);
-								pthread_mutex_lock(&mutex);
-								res = PQexec(conn, db_query);
-								pthread_mutex_unlock(&mutex);
-								if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-									fprintf(stderr, "error db deleting : %s", PQerrorMessage(conn));
-								}
-								PQclear(res);
-								received_ack = 1;
-								printf("ACK received\n");
-							} else {
-								printf("error: packet_type = %02X, not STAT\n");
-							}
+					
+					// 300 ms
+					usleep(300000);
+
+					pthread_mutex_lock(&mutex);
+					res = PQexec(conn, db_query);
+					pthread_mutex_unlock(&mutex);
+					
+					if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+						if (!PQntuples(res) || strcmp(PQgetvalue(res, 0, 2), msg_cont)) {
+							received_ack = 1;
 						}
 					}
+					PQclear(res);
+					printf("received_ack = %d, retries = %d\n", received_ack, pend_send_retries);
 				} while (!received_ack && pend_send_retries--);
-				// cancel timeout
-				tv.tv_usec = 0;	
-				if (setsockopt(req->gch.server_desc, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-					perror("setsockopt error");
-				}
 			} else {
 				gateway_protocol_mk_stat(
 					&(req->gch),
@@ -324,6 +288,34 @@ void process_packet(void *request) {
 				send_gcom_ch(&(req->gch), req->packet, req->packet_length);
 				
 				printf("nothing for app %s dev %d\n", (char *)req->gch.app_key, req->gch.dev_id);
+			}
+		} else if (req->packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT) {
+			// TODO change to ACK_PEND = 0x01
+			if (payload[0] == 0x00) {
+				char db_query[200];
+				snprintf(db_query, sizeof(db_query),
+					 "SELECT * FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d AND ack = False", 
+					(char *)req->gch.app_key, req->gch.dev_id
+				);
+				pthread_mutex_lock(&mutex);
+				res = PQexec(conn, db_query);
+				pthread_mutex_unlock(&mutex);
+				if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res)) {
+					snprintf(db_query, sizeof(db_query),
+						"UPDATE pend_msgs SET ack = True WHERE app_key = '%s' AND dev_id = %d AND msg = '%s'",
+						(char *)req->gch.app_key, req->gch.dev_id, PQgetvalue(res, 0, 2)
+					);
+					PQclear(res);
+					pthread_mutex_lock(&mutex);
+					res = PQexec(conn, db_query);
+					pthread_mutex_unlock(&mutex);
+					if (PQresultStatus(res) == PGRES_COMMAND_OK) {
+						printf("pend_msgs updated\n");
+					} else {
+						fprintf(stderr, "database error : %s\n", PQerrorMessage(conn));
+					}
+				}
+				PQclear(res);
 			}
 		} else {
 			gateway_protocol_mk_stat(
