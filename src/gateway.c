@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <arpa/inet.h> //inet_addr
 #include <unistd.h>
 #include <stdint.h>
@@ -17,6 +18,7 @@
 #include "gateway_protocol.h"
 #include "base64.h"
 #include "task_queue.h"
+#include "json.h"
 
 #define NTHREAD_MAX			10
 
@@ -24,6 +26,18 @@
 #define PEND_SEND_RETRIES_MAX		5
 #define GATEWAY_PROTOCOL_APP_KEY_SIZE	8
 #define DEVICE_DATA_MAX_LENGTH		256
+
+typedef struct {
+	char 		gw_id[17 +1];
+	char 		gw_pass[30 +1];
+	uint16_t 	gw_port;
+	char 		db_type[20];
+	char 		db_conn_addr[15+1];
+	uint16_t 	db_conn_port;
+	char 		db_conn_name[16];
+	char 		db_conn_user_name[32];
+	char 		db_conn_user_pass[32];
+} gw_conf_t;
 
 typedef struct {
 	uint32_t utc;
@@ -50,7 +64,10 @@ typedef struct {
 	uint8_t packet_length;
 } gcom_ch_request_t;
 
-/* for multithreading impl */
+static const char * gw_conf_file = "../gateway.conf";
+static void process_gw_conf(json_value* value, gw_conf_t *gw_conf);
+static int  read_gw_conf(const char *gw_conf_file, gw_conf_t *gw_conf);
+
 void process_packet(void *request);
 
 int send_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t pck_size);
@@ -92,33 +109,49 @@ pthread_mutex_t mutex;
 PGconn *conn;
 
 int main (int argc, char **argv) {
+	gw_conf_t *gw_conf = (gw_conf_t *)malloc(sizeof(gw_conf_t));
+	char *db_conninfo = (char *)malloc(512);
 	gcom_ch_t gch;
 	task_queue_t *tq;
 
 	signal(SIGINT, ctrc_handler);
-
-	conn = PQconnectdb("user=vlad dbname=iotserver password=dev");
+	
+	read_gw_conf(gw_conf_file, gw_conf);
+	snprintf(db_conninfo, 512, 
+			"hostaddr=%s port=%d dbname=%s user=%s password=%s", 
+			gw_conf->db_conn_addr,
+			gw_conf->db_conn_port,
+			gw_conf->db_conn_name,
+			gw_conf->db_conn_user_name,
+			gw_conf->db_conn_user_pass);
+							
+	conn = PQconnectdb(db_conninfo);
+	free(db_conninfo);
 	if (PQstatus(conn) == CONNECTION_BAD) {
 		fprintf(stderr,"connection to db error: %s\n", PQerrorMessage(conn));
+		free(gw_conf);
 		return EXIT_FAILURE;
 	}
 
 	if ((gch.server_desc = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
 		perror("socket creation error");
+		free(gw_conf);
 		return EXIT_FAILURE;
 	}
 
 	gch.server.sin_family 		= AF_INET;
-	gch.server.sin_port		= htons(54345);
+	gch.server.sin_port		= htons(gw_conf->gw_port);
 	gch.server.sin_addr.s_addr 	= INADDR_ANY;
 
 	if (bind(gch.server_desc, (struct sockaddr *) &gch.server, sizeof(gch.server)) < 0) {
 		perror("binding error");
+		free(gw_conf);
 		return EXIT_FAILURE;
 	}
 
 	if(!(tq = task_queue_create(NTHREAD_MAX))) {
 		perror("task_queue creation error");
+		free(gw_conf);
 		return EXIT_FAILURE;
 	}
 
@@ -135,11 +168,11 @@ int main (int argc, char **argv) {
 		if (recv_gcom_ch(&req->gch, req->packet, &req->packet_length, DEVICE_DATA_MAX_LENGTH)) {
 			task_queue_enqueue(tq, process_packet, req);
 		} else {
-			
 			fprintf(stderr, "payload decode error\n");
 		}
 	}
 
+	free(gw_conf);
 	pthread_mutex_destroy(&mutex);
 	close(gch.server_desc);
 	PQfinish(conn);
@@ -186,7 +219,7 @@ void process_packet(void *request) {
 			
 			strftime(sensor_data.timedate, TIMEDATE_LENGTH, "%d/%m/%Y %H:%M:%S", localtime(&t));
 			snprintf(db_query, sizeof(db_query), 
-				"INSERT INTO dev_%s_%d VALUES (%d, '%s', $1)", 
+				"INSERT INTO dev_%s_%d VALUES (%lu, '%s', $1)", 
 				(char *)req->gch.app_key, req->gch.dev_id, t, sensor_data.timedate
 			);
 			
@@ -461,4 +494,71 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 	}
 	
 	return ret;
+}
+
+
+static void process_gw_conf(json_value* value, gw_conf_t *gw_conf) {
+	json_value *pv = value;
+
+	strncpy(gw_conf->gw_id, pv->u.object.values[0].value->u.string.ptr, sizeof(gw_conf->gw_id));
+	strncpy(gw_conf->gw_pass, pv->u.object.values[1].value->u.string.ptr, sizeof(gw_conf->gw_pass));
+	gw_conf->gw_port = pv->u.object.values[2].value->u.integer;
+	strncpy(gw_conf->db_type, pv->u.object.values[3].value->u.string.ptr, sizeof(gw_conf->db_type));
+	
+	pv = pv->u.object.values[4].value;
+	
+	strncpy(gw_conf->db_conn_addr, pv->u.object.values[0].value->u.string.ptr, sizeof(gw_conf->db_conn_addr));
+	gw_conf->db_conn_port = pv->u.object.values[1].value->u.integer;
+	strncpy(gw_conf->db_conn_name, pv->u.object.values[2].value->u.string.ptr, sizeof(gw_conf->db_conn_name));
+	strncpy(gw_conf->db_conn_user_name, pv->u.object.values[3].value->u.string.ptr, sizeof(gw_conf->db_conn_user_name));
+	strncpy(gw_conf->db_conn_user_pass, pv->u.object.values[4].value->u.string.ptr, sizeof(gw_conf->db_conn_user_pass));
+}
+
+static int read_gw_conf(const char *gw_conf_file, gw_conf_t *gw_conf) {
+	struct stat filestatus;
+	FILE *fp;
+	char *file_contents;
+	json_char *json;
+	json_value *jvalue;
+
+	if (stat(gw_conf_file, &filestatus)) {
+		fprintf(stderr, "File %s not found.", gw_conf_file);
+		return 1;
+	}
+	file_contents = (char *)malloc(filestatus.st_size);
+	if (!file_contents) {
+		fprintf(stderr, "Memory error allocating %d bytes.", filestatus.st_size);
+		return 1;
+	}
+	fp = fopen(gw_conf_file, "rt");
+	if (!fp) {
+		fprintf(stderr, "Unable to open %s.", gw_conf_file);
+		fclose(fp);
+		free(file_contents);
+		return 1;
+	}
+	if (fread(file_contents, filestatus.st_size, 1, fp) != 1) {
+		fprintf(stderr, "Unable to read %s.", gw_conf_file);
+		fclose(fp);
+		free(file_contents);
+		return 1;
+	}
+	fclose(fp);
+	
+	printf("%s\n", file_contents);
+	
+	json = (json_char *)file_contents;
+	jvalue = json_parse(json, filestatus.st_size);
+	if (!jvalue) {
+		perror("Unable to parse json.");
+		free(file_contents);
+		return 1;
+	}
+	
+	process_gw_conf(jvalue, gw_conf);
+
+	json_value_free(jvalue);
+	free(file_contents);
+	
+	return 0;
 }
