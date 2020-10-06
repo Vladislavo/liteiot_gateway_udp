@@ -384,67 +384,6 @@ void gateway_protocol_data_send_payload_decode(
 	sensor_data->data_length = payload_length - p_len;
 }
 
-void packet_encode(
-	const uint8_t *app_key,
-	const uint8_t dev_id, 
-	const gateway_protocol_packet_type_t p_type, 
-	const uint8_t payload_length,
-	const uint8_t *payload,
-	uint8_t *packet_length,
-	uint8_t *packet) 
-{
-	*packet_length = 0;
-	
-	memcpy(&packet[*packet_length], app_key, GATEWAY_PROTOCOL_APP_KEY_SIZE);
-	*packet_length += GATEWAY_PROTOCOL_APP_KEY_SIZE;
-
-	packet[*packet_length] = dev_id;
-	(*packet_length)++;
-
-	packet[*packet_length] = p_type;
-	(*packet_length)++;
-
-	packet[*packet_length] = payload_length;
-	(*packet_length)++;
-
-	memcpy(&packet[*packet_length], payload, payload_length);
-	*packet_length += payload_length;
-}
-
-uint8_t packet_decode(
-	uint8_t *app_key,
-	uint8_t *dev_id,
-	gateway_protocol_packet_type_t *ptype,
-	uint8_t *payload_length,
-	uint8_t *payload,
-	const uint8_t packet_length,
-	const uint8_t *packet)
-{
-	uint8_t p_len = 0;
-	int i;
-
-	memcpy(app_key, &packet[p_len], GATEWAY_PROTOCOL_APP_KEY_SIZE);
-	p_len += GATEWAY_PROTOCOL_APP_KEY_SIZE;
-	
-	app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE] = '\0';
-
-	*dev_id = packet[p_len];
-	p_len++;
-
-	*ptype = (gateway_protocol_packet_type_t) packet[p_len];
-	p_len++;
-
-	*payload_length = packet[p_len];
-	p_len++;
-
-	memcpy(payload, &packet[p_len], *payload_length);
-	p_len += *payload_length;
-
-	printf("payload_length = %d , calc = %d, recv = %d\n", *payload_length, p_len, packet_length);
-
-	return p_len == packet_length;
-}
-
 void gateway_protocol_mk_stat(
 	gcom_ch_t *gch,
 	gateway_protocol_stat_t stat,
@@ -515,19 +454,6 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 		*pck_length = ret;
 		
 	}
-
-	//uint8_t decyphered[160];
-	//uint8_t skey[16] = { 0x73, 0x60, 0xe4, 0x5e, 0x09, 0xa0, 0x5e, 0xab, 0xb1, 0x69, 0xdf, 0x1f, 0x8c, 0x80, 0x72, 0xd5 };
-	//struct AES_ctx ctx;
-	//AES_init_ctx(&ctx, skey);
-
-	printf("%d\n", ret);
-	for (i = 0; i < *pck_length; i++) {
-		printf("%02X : ", pck[i]);
-	}
-	printf("\n");
-
-	
 
 	return ret;
 }
