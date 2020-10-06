@@ -12,8 +12,6 @@
 extern "C" {
 #endif
 
-typedef void (* gateway_protocol_checkup_callback_t)(gateway_protocol_conf *);
-
 typedef enum {
     GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND = 0x00,
     GATEWAY_PROTOCOL_PACKET_TYPE_PEND_REQ = 0x04,
@@ -31,11 +29,13 @@ typedef enum {
 } gateway_protocol_stat_t;
 
 typedef struct {
-	uint8_t app_key[GATEWAY_PROTOCOL_APPKEY_SIZE];
+	uint8_t app_key[GATEWAY_PROTOCOL_APPKEY_SIZE +1];
 	uint8_t dev_id;
 	uint8_t secure_key[GATEWAY_PROTOCOL_SECURE_KEY_SIZE];
 	uint8_t secure;
 } gateway_protocol_conf_t;
+
+typedef void (* gateway_protocol_checkup_callback_t)(gateway_protocol_conf_t *);
 
 
 void gateway_protocol_packet_encode (
@@ -51,8 +51,8 @@ uint8_t gateway_protocol_packet_decode (
     gateway_protocol_packet_type_t *packet_type,
     uint8_t *payload_length,
     uint8_t *payload,
-    const uint8_t packet_length,
-    const uint8_t *packet);
+    uint8_t packet_length,
+    uint8_t *packet);
 
 void gateway_protocol_set_checkup_callback(gateway_protocol_checkup_callback_t callback);
 

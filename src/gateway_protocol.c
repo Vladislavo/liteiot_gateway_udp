@@ -1,4 +1,4 @@
-#include <gateway_protocol.h>
+#include "gateway_protocol.h"
 #include "security_adapter.h"
 
 #define GATEWAY_PROTOCOL_APP_KEY_SIZE       8
@@ -32,10 +32,10 @@ void gateway_protocol_packet_encode (
 
     if (gwp_conf->secure) {
 	    security_adapter_encrypt(	gwp_conf->secure_key, 
-					&packet[GATWAY_PROTOCOL_APP_KEY_SIZE], 
-					*packet_length,
-					&packet[GATWAY_PROTOCOL_APP_KEY_SIZE], 
-					*packet_length-GATEWAY_PROTOCOL_APP_KEY_SIZE
+					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
+					packet_length,
+					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
+					(*packet_length-GATEWAY_PROTOCOL_APP_KEY_SIZE)
 	    );
 	    (*packet_length) += GATEWAY_PROTOCOL_APP_KEY_SIZE; 
     }
@@ -46,22 +46,23 @@ uint8_t gateway_protocol_packet_decode (
     gateway_protocol_packet_type_t *packet_type,
     uint8_t *payload_length,
     uint8_t *payload,
-    const uint8_t packet_length,
-    const uint8_t *packet)
+    uint8_t packet_length,
+    uint8_t *packet)
 {
     uint8_t p_len = 0;
 
     memcpy(gwp_conf->app_key, &packet[p_len], GATEWAY_PROTOCOL_APP_KEY_SIZE);
     p_len += GATEWAY_PROTOCOL_APP_KEY_SIZE;
 
-    checkup_callback(gwp_conf);
+    gwp_conf->app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE] = '\0';
 
+    checkup_callback(gwp_conf);
     if (gwp_conf->secure) {
 	    security_adapter_decrypt(	gwp_conf->secure_key, 
-					&packet[GATWAY_PROTOCOL_APP_KEY_SIZE], 
-					packet_length-GATEWAY_PROTOCOL_APP_KEY_SIZE
-					&packet[GATWAY_PROTOCOL_APP_KEY_SIZE], 
-					*packet_length
+					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
+					(packet_length-GATEWAY_PROTOCOL_APP_KEY_SIZE),
+					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
+					&packet_length
 	    );
     }
 

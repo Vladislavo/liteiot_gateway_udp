@@ -49,8 +49,7 @@ typedef struct {
 } sensor_data_t;
 
 typedef struct {
-	uint8_t app_key[GATEWAY_PROTOCOL_APP_KEY_SIZE +1];
-	uint8_t dev_id;
+	gateway_protocol_conf_t gwp_conf;
 	int server_desc;
 	int client_desc;
 	struct sockaddr_in server;
@@ -102,6 +101,8 @@ void gateway_protocol_mk_stat(
 	uint8_t *pck_len);
 
 void send_utc(gcom_ch_t *pch);
+
+void gateway_protocol_checkup_callback(gateway_protocol_conf_t *gwp_conf);
 
 void ctrc_handler (int sig);
 static volatile uint8_t working = 1;
@@ -157,6 +158,8 @@ int main (int argc, char **argv) {
 	}
 
 	pthread_mutex_init(&mutex, NULL);
+
+	gateway_protocol_set_checkup_callback(gateway_protocol_checkup_callback);
 	
 	while (working) {
 		gcom_ch_request_t *req = (gcom_ch_request_t *)malloc(sizeof(gcom_ch_request_t));
@@ -190,10 +193,10 @@ void process_packet(void *request) {
 	uint8_t payload[DEVICE_DATA_MAX_LENGTH];
 	uint8_t payload_length;	
 	PGresult *res;
+	int i;
 
-	if (packet_decode(
-		req->gch.app_key,
-		&(req->gch.dev_id),
+	if (gateway_protocol_packet_decode(
+		&(req->gch.gwp_conf),
 		&(req->packet_type),
 		&payload_length, payload,
 		req->packet_length, req->packet))
@@ -221,7 +224,7 @@ void process_packet(void *request) {
 			strftime(sensor_data.timedate, TIMEDATE_LENGTH, "%d/%m/%Y %H:%M:%S", localtime(&t));
 			snprintf(db_query, sizeof(db_query), 
 				"INSERT INTO dev_%s_%d VALUES (%lu, '%s', $1)", 
-				(char *)req->gch.app_key, req->gch.dev_id, t, sensor_data.timedate
+				(char *)req->gch.gwp_conf.app_key, req->gch.gwp_conf.dev_id, t, sensor_data.timedate
 			);
 			
 			const char *params[1];
@@ -240,7 +243,7 @@ void process_packet(void *request) {
 
 				snprintf(db_query, sizeof(db_query),
 					 "SELECT * FROM pend_msgs WHERE app_key='%s' and dev_id = %d and ack = False", 
-					(char *)req->gch.app_key, req->gch.dev_id
+					(char *)req->gch.gwp_conf.app_key, req->gch.gwp_conf.dev_id
 				);
 				
 				pthread_mutex_lock(&mutex);
@@ -270,7 +273,7 @@ void process_packet(void *request) {
 			char db_query[200];
 			snprintf(db_query, sizeof(db_query),
 				 "SELECT * FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d AND ack = False", 
-				(char *)req->gch.app_key, req->gch.dev_id
+				(char *)req->gch.gwp_conf.app_key, req->gch.gwp_conf.dev_id
 			);
 			pthread_mutex_lock(&mutex);
 			res = PQexec(conn, db_query);
@@ -289,9 +292,8 @@ void process_packet(void *request) {
 				// send the msg until ack is received
 				uint8_t received_ack = 0;
 				uint8_t pend_send_retries = PEND_SEND_RETRIES_MAX;
-				packet_encode(
-					req->gch.app_key,
-					req->gch.dev_id, 
+				gateway_protocol_packet_encode(
+					&(req->gch.gwp_conf),
 					GATEWAY_PROTOCOL_PACKET_TYPE_PEND_SEND,
 					payload_length, payload,
 					&(req->packet_length), req->packet);
@@ -321,7 +323,7 @@ void process_packet(void *request) {
 				
 				send_gcom_ch(&(req->gch), req->packet, req->packet_length);
 				
-				printf("nothing for app %s dev %d\n", (char *)req->gch.app_key, req->gch.dev_id);
+				printf("nothing for app %s dev %d\n", (char *)req->gch.gwp_conf.app_key, req->gch.gwp_conf.dev_id);
 			}
 		} else if (req->packet_type == GATEWAY_PROTOCOL_PACKET_TYPE_STAT) {
 			// TODO change to ACK_PEND = 0x01
@@ -329,7 +331,7 @@ void process_packet(void *request) {
 				char db_query[200];
 				snprintf(db_query, sizeof(db_query),
 					 "SELECT * FROM pend_msgs WHERE app_key = '%s' AND dev_id = %d AND ack = False", 
-					(char *)req->gch.app_key, req->gch.dev_id
+					(char *)req->gch.gwp_conf.app_key, req->gch.gwp_conf.dev_id
 				);
 				pthread_mutex_lock(&mutex);
 				res = PQexec(conn, db_query);
@@ -337,7 +339,7 @@ void process_packet(void *request) {
 				if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res)) {
 					snprintf(db_query, sizeof(db_query),
 						"UPDATE pend_msgs SET ack = True WHERE app_key = '%s' AND dev_id = %d AND msg = '%s'",
-						(char *)req->gch.app_key, req->gch.dev_id, PQgetvalue(res, 0, 2)
+						(char *)req->gch.gwp_conf.app_key, req->gch.gwp_conf.dev_id, PQgetvalue(res, 0, 2)
 					);
 					PQclear(res);
 					pthread_mutex_lock(&mutex);
@@ -449,9 +451,8 @@ void gateway_protocol_mk_stat(
 	uint8_t *pck,
 	uint8_t *pck_len)
 {
-	packet_encode(
-		gch->app_key,
-		gch->dev_id,
+	gateway_protocol_packet_encode(
+		&(gch->gwp_conf),
 		GATEWAY_PROTOCOL_PACKET_TYPE_STAT,
 		1, (uint8_t *)&stat,
 		pck_len, pck);
@@ -466,15 +467,34 @@ void send_utc(gcom_ch_t *gch) {
 				
 	gettimeofday(&tv, NULL);
 				
-	packet_encode (
-		gch->app_key,
-		gch->dev_id,
+	gateway_protocol_packet_encode (
+		&(gch->gwp_conf),
 		GATEWAY_PROTOCOL_PACKET_TYPE_TIME_SEND,
 		sizeof(uint32_t), (uint8_t *)&tv.tv_sec,
 		&buf_len, buf
 	);
 					
 	send_gcom_ch(gch, buf, buf_len);
+}
+
+void gateway_protocol_checkup_callback(gateway_protocol_conf_t *gwp_conf) {
+	PGresult *res;
+	char db_query[200];
+	int i;
+	snprintf(db_query, sizeof(db_query), 
+		"SELECT secure_key, secure FROM applications WHERE app_key = '%s'", (char *)gwp_conf->app_key
+	);
+	pthread_mutex_lock(&mutex);
+	res = PQexec(conn, db_query);
+	pthread_mutex_unlock(&mutex);
+
+	if ((PQresultStatus(res) == PGRES_TUPLES_OK) && PQntuples(res)) {
+		base64_decode(PQgetvalue(res, 0, 0), strlen(PQgetvalue(res, 0, 0))-1, gwp_conf->secure_key);
+		gwp_conf->secure = PQgetvalue(res, 0, 1)[0] == 't';
+	} else {
+		perror("gateway_protocol_checkup_callback error");
+	}
+	PQclear(res);
 }
 
 int send_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t pck_size) {
@@ -497,9 +517,9 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 	}
 
 	//uint8_t decyphered[160];
-	uint8_t skey[16] = { 0x73, 0x60, 0xe4, 0x5e, 0x09, 0xa0, 0x5e, 0xab, 0xb1, 0x69, 0xdf, 0x1f, 0x8c, 0x80, 0x72, 0xd5 };
-	struct AES_ctx ctx;
-	AES_init_ctx(&ctx, skey);
+	//uint8_t skey[16] = { 0x73, 0x60, 0xe4, 0x5e, 0x09, 0xa0, 0x5e, 0xab, 0xb1, 0x69, 0xdf, 0x1f, 0x8c, 0x80, 0x72, 0xd5 };
+	//struct AES_ctx ctx;
+	//AES_init_ctx(&ctx, skey);
 
 	printf("%d\n", ret);
 	for (i = 0; i < *pck_length; i++) {
@@ -507,13 +527,6 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 	}
 	printf("\n");
 
-	for (i = 0; i < *pck_length-9 ; i+= 16)
-		AES_ECB_decrypt(&ctx, &pck[9+i]);
-		
-	for (i = 0; i < *pck_length; i++) {
-		printf("%02X : ", pck[i]);
-	}
-	printf("\n");
 	
 
 	return ret;

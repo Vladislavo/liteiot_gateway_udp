@@ -29,6 +29,8 @@ void security_adapter_decrypt(
 	uint8_t *decrypted_payload,
 	uint8_t *decrypted_payload_length)
 {
+	// assert(encrypted_payload_length % SECURITY_KEY_SIZE == 0);	
+
 	uint16_t i;
 	struct AES_ctx ctx;
 	AES_init_ctx(&ctx, secure_key);
