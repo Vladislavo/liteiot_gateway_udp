@@ -4,11 +4,15 @@
 #include <stdint.h>
 #include <string.h>
 
-#define GATEWAY_PROTOCOL_PACKET_SIZE_MAX    128
+#define GATEWAY_PROTOCOL_PACKET_SIZE_MAX    	128
+#define GATEWAY_PROTOCOL_APPKEY_SIZE		8
+#define GATEWAY_PROTOCOL_SECURE_KEY_SIZE	16
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef void (* gateway_protocol_checkup_callback_t)(gateway_protocol_conf *);
 
 typedef enum {
     GATEWAY_PROTOCOL_PACKET_TYPE_DATA_SEND = 0x00,
@@ -26,9 +30,16 @@ typedef enum {
     GATEWAY_PROTOCOL_STAT_NACK = 0xFF
 } gateway_protocol_stat_t;
 
-void gateway_protocol_init(const uint8_t *appkey, const uint8_t devid);
+typedef struct {
+	uint8_t app_key[GATEWAY_PROTOCOL_APPKEY_SIZE];
+	uint8_t dev_id;
+	uint8_t secure_key[GATEWAY_PROTOCOL_SECURE_KEY_SIZE];
+	uint8_t secure;
+} gateway_protocol_conf_t;
+
 
 void gateway_protocol_packet_encode (
+    const gateway_protocol_conf_t *gwp_conf,
     const gateway_protocol_packet_type_t packet_type,
     const uint8_t payload_length,
     const uint8_t *payload,
@@ -36,11 +47,14 @@ void gateway_protocol_packet_encode (
     uint8_t *packet);
 
 uint8_t gateway_protocol_packet_decode (
+    gateway_protocol_conf_t *gwp_conf,
     gateway_protocol_packet_type_t *packet_type,
     uint8_t *payload_length,
     uint8_t *payload,
     const uint8_t packet_length,
     const uint8_t *packet);
+
+void gateway_protocol_set_checkup_callback(gateway_protocol_checkup_callback_t callback);
 
 #ifdef __cplusplus
 }

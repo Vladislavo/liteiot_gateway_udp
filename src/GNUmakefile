@@ -12,10 +12,10 @@ INCLUDES 	= -I/usr/include/postgresql \
 		  -I$(INC_DIR)
 
 TARGET 		= $(BIN_DIR)/gateway
-OBJS		= $(wildcard $(OBJ_DIR)/*.o)
+#OBJS		= $(wildcard $(OBJ_DIR)/*.o)
 #
-#SRCS		= $(wildcard $(SRC_DIR)/*.c)
-#OBJS		= $(SRCS:.c=.o)
+SRCS		= $(wildcard $(SRC_DIR)/*.c)
+OBJS		= $(patsubst $(SRC_DIR)%.c, $(OBJ_DIR)%.o, $(SRCS))
 #
 
 

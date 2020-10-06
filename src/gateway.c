@@ -19,6 +19,7 @@
 #include "base64.h"
 #include "task_queue.h"
 #include "json.h"
+#include "aes.h"
 
 #define NTHREAD_MAX			10
 
@@ -168,7 +169,7 @@ int main (int argc, char **argv) {
 		if (recv_gcom_ch(&req->gch, req->packet, &req->packet_length, DEVICE_DATA_MAX_LENGTH)) {
 			task_queue_enqueue(tq, process_packet, req);
 		} else {
-			fprintf(stderr, "payload decode error\n");
+			fprintf(stderr, "packet receive error\n");
 		}
 	}
 
@@ -418,7 +419,8 @@ uint8_t packet_decode(
 	const uint8_t *packet)
 {
 	uint8_t p_len = 0;
-	
+	int i;
+
 	memcpy(app_key, &packet[p_len], GATEWAY_PROTOCOL_APP_KEY_SIZE);
 	p_len += GATEWAY_PROTOCOL_APP_KEY_SIZE;
 	
@@ -486,13 +488,34 @@ int send_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t pck_size) {
 }
 
 int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck_size) {
-	int ret;
+	int ret, i;
 	if ((ret = recvfrom(gch->server_desc, (char *)pck, pck_size, MSG_WAITALL, (struct sockaddr *)&gch->client, &gch->sock_len)) < 0) {
 		perror("socket receive error");
 	} else {
 		*pck_length = ret;
+		
 	}
+
+	//uint8_t decyphered[160];
+	uint8_t skey[16] = { 0x73, 0x60, 0xe4, 0x5e, 0x09, 0xa0, 0x5e, 0xab, 0xb1, 0x69, 0xdf, 0x1f, 0x8c, 0x80, 0x72, 0xd5 };
+	struct AES_ctx ctx;
+	AES_init_ctx(&ctx, skey);
+
+	printf("%d\n", ret);
+	for (i = 0; i < *pck_length; i++) {
+		printf("%02X : ", pck[i]);
+	}
+	printf("\n");
+
+	for (i = 0; i < *pck_length-9 ; i+= 16)
+		AES_ECB_decrypt(&ctx, &pck[9+i]);
+		
+	for (i = 0; i < *pck_length; i++) {
+		printf("%02X : ", pck[i]);
+	}
+	printf("\n");
 	
+
 	return ret;
 }
 
