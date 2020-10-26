@@ -27,18 +27,24 @@
 #define PEND_SEND_RETRIES_MAX		5
 #define GATEWAY_PROTOCOL_APP_KEY_SIZE	8
 #define DEVICE_DATA_MAX_LENGTH		256
+#define GATEWAY_SECURE_KEY_SIZE		16
+
 
 typedef struct {
 	char 		gw_id[17 +1];
-	char 		gw_pass[30 +1];
+	uint8_t 	gw_secure_key[GATEWAY_SECURE_KEY_SIZE];
 	uint16_t 	gw_port;
 	char 		db_type[20];
-	char 		db_conn_addr[15+1];
-	uint16_t 	db_conn_port;
-	char 		db_conn_name[16];
-	char 		db_conn_user_name[32];
-	char 		db_conn_user_pass[32];
+	uint32_t	telemetry_send_period;
 } gw_conf_t;
+
+typedef struct {
+	char 		addr[15+1];
+	uint16_t 	port;
+	char 		db_name[32];
+	char 		user_name[32];
+	char 		user_pass[32];
+} db_conf_t;
 
 typedef struct {
 	uint32_t utc;
@@ -64,9 +70,13 @@ typedef struct {
 	uint8_t packet_length;
 } gcom_ch_request_t;
 
-static const char * gw_conf_file = "../gateway.conf";
+static const char * gw_conf_file = "gateway.conf";
+static const char * db_conf_file = "db.conf";
 static void process_gw_conf(json_value* value, gw_conf_t *gw_conf);
-static int  read_gw_conf(const char *gw_conf_file, gw_conf_t *gw_conf);
+static void process_db_conf(json_value* value, db_conf_t *db_conf);
+static json_value * read_json_conf(const char *file_path);
+static int read_gw_conf(const char *gw_conf_file_path, gw_conf_t *gw_conf);
+static int read_db_conf(const char *db_conf_file_path, db_conf_t *db_conf);
 
 void process_packet(void *request);
 
@@ -112,22 +122,43 @@ PGconn *conn;
 
 int main (int argc, char **argv) {
 	gw_conf_t *gw_conf = (gw_conf_t *)malloc(sizeof(gw_conf_t));
+	db_conf_t *db_conf = (db_conf_t *)malloc(sizeof(db_conf_t));
 	char *db_conninfo = (char *)malloc(512);
 	gcom_ch_t gch;
 	task_queue_t *tq;
 
 	signal(SIGINT, ctrc_handler);
 	
-	read_gw_conf(gw_conf_file, gw_conf);
+	if(read_gw_conf(gw_conf_file, gw_conf)) {
+		return EXIT_FAILURE;
+	}
+
+	//gw auth, then
+	if(read_db_conf(db_conf_file, db_conf)) {
+		return EXIT_FAILURE;
+	}
+	
 	snprintf(db_conninfo, 512, 
 			"hostaddr=%s port=%d dbname=%s user=%s password=%s", 
-			gw_conf->db_conn_addr,
-			gw_conf->db_conn_port,
-			gw_conf->db_conn_name,
-			gw_conf->db_conn_user_name,
-			gw_conf->db_conn_user_pass);
-							
+			db_conf->addr,
+			db_conf->port,
+			db_conf->db_name,
+			db_conf->user_name,
+			db_conf->user_pass);
+	
+	printf("db_conf : '%s'\n", db_conninfo);
+
 	conn = PQconnectdb(db_conninfo);
+	
+	snprintf(db_conninfo, 512, 
+			"id=%s secure_key=%s port=%d type=%s telemetry_send_period=%d\n", 
+			gw_conf->gw_id,
+			gw_conf->gw_secure_key,
+			gw_conf->gw_port,
+			gw_conf->db_type,
+			gw_conf->telemetry_send_period);
+	printf("gw_conf : '%s'\n", db_conninfo);
+	
 	free(db_conninfo);
 	if (PQstatus(conn) == CONNECTION_BAD) {
 		fprintf(stderr,"connection to db error: %s\n", PQerrorMessage(conn));
@@ -177,6 +208,7 @@ int main (int argc, char **argv) {
 	}
 
 	free(gw_conf);
+	free(db_conf);
 	pthread_mutex_destroy(&mutex);
 	close(gch.server_desc);
 	PQfinish(conn);
@@ -193,7 +225,6 @@ void process_packet(void *request) {
 	uint8_t payload[DEVICE_DATA_MAX_LENGTH];
 	uint8_t payload_length;	
 	PGresult *res;
-	int i;
 
 	if (gateway_protocol_packet_decode(
 		&(req->gch.gwp_conf),
@@ -230,7 +261,7 @@ void process_packet(void *request) {
 			const char *params[1];
 			int paramslen[1];
 			int paramsfor[1];
-			params[0] = sensor_data.data;
+			params[0] = (char *) sensor_data.data;
 			paramslen[0] = sensor_data.data_length;
 			paramsfor[0] = 1; // format - binary
 
@@ -419,7 +450,7 @@ void send_utc(gcom_ch_t *gch) {
 void gateway_protocol_checkup_callback(gateway_protocol_conf_t *gwp_conf) {
 	PGresult *res;
 	char db_query[200];
-	int i;
+	
 	snprintf(db_query, sizeof(db_query), 
 		"SELECT secure_key, secure FROM applications WHERE app_key = '%s'", (char *)gwp_conf->app_key
 	);
@@ -447,7 +478,7 @@ int send_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t pck_size) {
 }
 
 int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck_size) {
-	int ret, i;
+	int ret;
 	if ((ret = recvfrom(gch->server_desc, (char *)pck, pck_size, MSG_WAITALL, (struct sockaddr *)&gch->client, &gch->sock_len)) < 0) {
 		perror("socket receive error");
 	} else {
@@ -460,67 +491,93 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 
 
 static void process_gw_conf(json_value* value, gw_conf_t *gw_conf) {
-	json_value *pv = value;
-
-	strncpy(gw_conf->gw_id, pv->u.object.values[0].value->u.string.ptr, sizeof(gw_conf->gw_id));
-	strncpy(gw_conf->gw_pass, pv->u.object.values[1].value->u.string.ptr, sizeof(gw_conf->gw_pass));
-	gw_conf->gw_port = pv->u.object.values[2].value->u.integer;
-	strncpy(gw_conf->db_type, pv->u.object.values[3].value->u.string.ptr, sizeof(gw_conf->db_type));
-	
-	pv = pv->u.object.values[4].value;
-	
-	strncpy(gw_conf->db_conn_addr, pv->u.object.values[0].value->u.string.ptr, sizeof(gw_conf->db_conn_addr));
-	gw_conf->db_conn_port = pv->u.object.values[1].value->u.integer;
-	strncpy(gw_conf->db_conn_name, pv->u.object.values[2].value->u.string.ptr, sizeof(gw_conf->db_conn_name));
-	strncpy(gw_conf->db_conn_user_name, pv->u.object.values[3].value->u.string.ptr, sizeof(gw_conf->db_conn_user_name));
-	strncpy(gw_conf->db_conn_user_pass, pv->u.object.values[4].value->u.string.ptr, sizeof(gw_conf->db_conn_user_pass));
+	strncpy(gw_conf->gw_id, value->u.object.values[0].value->u.string.ptr, sizeof(gw_conf->gw_id));
+	strncpy(gw_conf->gw_secure_key, value->u.object.values[1].value->u.string.ptr, sizeof(gw_conf->gw_secure_key));
+	gw_conf->gw_port = value->u.object.values[2].value->u.integer;
+	strncpy(gw_conf->db_type, value->u.object.values[3].value->u.string.ptr, sizeof(gw_conf->db_type));
+	gw_conf->telemetry_send_period = value->u.object.values[4].value->u.integer;
 }
 
-static int read_gw_conf(const char *gw_conf_file, gw_conf_t *gw_conf) {
+static void process_db_conf(json_value* value, db_conf_t *db_conf) {
+	strncpy(db_conf->addr, value->u.object.values[0].value->u.string.ptr, sizeof(db_conf->addr));
+	db_conf->port = value->u.object.values[1].value->u.integer;
+	strncpy(db_conf->db_name, value->u.object.values[2].value->u.string.ptr, sizeof(db_conf->db_name));
+	strncpy(db_conf->user_name, value->u.object.values[3].value->u.string.ptr, sizeof(db_conf->user_name));
+	strncpy(db_conf->user_pass, value->u.object.values[4].value->u.string.ptr, sizeof(db_conf->user_pass));
+}
+
+static json_value * read_json_conf(const char *file_path) {
 	struct stat filestatus;
 	FILE *fp;
 	char *file_contents;
 	json_char *json;
 	json_value *jvalue;
 
-	if (stat(gw_conf_file, &filestatus)) {
-		fprintf(stderr, "File %s not found.", gw_conf_file);
-		return 1;
+	if (stat(file_path, &filestatus)) {
+		fprintf(stderr, "File %s not found.", file_path);
+		return NULL;
 	}
 	file_contents = (char *)malloc(filestatus.st_size);
 	if (!file_contents) {
-		fprintf(stderr, "Memory error allocating %d bytes.", filestatus.st_size);
-		return 1;
+		fprintf(stderr, "Memory error allocating %d bytes.", (int) filestatus.st_size);
+		return NULL;
 	}
-	fp = fopen(gw_conf_file, "rt");
+	fp = fopen(file_path, "rt");
 	if (!fp) {
-		fprintf(stderr, "Unable to open %s.", gw_conf_file);
+		fprintf(stderr, "Unable to open %s.", file_path);
 		fclose(fp);
 		free(file_contents);
-		return 1;
+		return NULL;
 	}
 	if (fread(file_contents, filestatus.st_size, 1, fp) != 1) {
-		fprintf(stderr, "Unable to read %s.", gw_conf_file);
+		fprintf(stderr, "Unable to read %s.", file_path);
 		fclose(fp);
 		free(file_contents);
-		return 1;
+		return NULL;
 	}
 	fclose(fp);
 	
-	printf("%s\n", file_contents);
+	file_contents[filestatus.st_size] = '\0';
+	printf("file content : \n'%s'\n", file_contents);
 	
 	json = (json_char *)file_contents;
 	jvalue = json_parse(json, filestatus.st_size);
 	if (!jvalue) {
 		perror("Unable to parse json.");
 		free(file_contents);
-		return 1;
+		return NULL;
 	}
 	
+	free(file_contents);
+	
+	return jvalue;
+}
+
+static int read_gw_conf(const char *gw_conf_file_path, gw_conf_t *gw_conf) {
+	json_value *jvalue;
+	
+	jvalue = read_json_conf(gw_conf_file_path);
+	if (!jvalue) {
+		return 1;
+	}
 	process_gw_conf(jvalue, gw_conf);
 
 	json_value_free(jvalue);
-	free(file_contents);
 	
 	return 0;
 }
+
+static int read_db_conf(const char *db_conf_file_path, db_conf_t *db_conf) {
+	json_value *jvalue;
+	
+	jvalue = read_json_conf(db_conf_file_path);
+	if (!jvalue) {
+		return 1;
+	}
+	process_db_conf(jvalue, db_conf);
+
+	json_value_free(jvalue);
+	
+	return 0;
+}
+
