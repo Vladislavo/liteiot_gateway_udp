@@ -33,7 +33,7 @@ void gateway_protocol_packet_encode (
     if (gwp_conf->secure) {
 	    security_adapter_encrypt(	gwp_conf->secure_key, 
 					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
-					packet_length,
+					(uint16_t *)packet_length,
 					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
 					(*packet_length-GATEWAY_PROTOCOL_APP_KEY_SIZE)
 	    );
@@ -62,7 +62,7 @@ uint8_t gateway_protocol_packet_decode (
 					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
 					(packet_length-GATEWAY_PROTOCOL_APP_KEY_SIZE),
 					&packet[GATEWAY_PROTOCOL_APP_KEY_SIZE], 
-					&packet_length
+					(uint16_t *)&packet_length
 	    );
     }
 

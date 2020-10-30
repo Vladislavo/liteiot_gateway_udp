@@ -4,9 +4,9 @@
 void security_adapter_encrypt(
 	const uint8_t *secure_key,
 	uint8_t *encrypted_payload, 
-	uint8_t *encrypted_payload_length,
+	uint16_t *encrypted_payload_length,
 	uint8_t *decrypted_payload,
-	uint8_t decrypted_payload_length) 
+	uint16_t decrypted_payload_length) 
 {
 	uint16_t i;
 	struct AES_ctx ctx;
@@ -25,9 +25,9 @@ void security_adapter_encrypt(
 void security_adapter_decrypt(
 	const uint8_t *secure_key,
 	uint8_t *encrypted_payload, 
-	uint8_t encrypted_payload_length,
+	uint16_t encrypted_payload_length,
 	uint8_t *decrypted_payload,
-	uint8_t *decrypted_payload_length)
+	uint16_t *decrypted_payload_length)
 {
 	// assert(encrypted_payload_length % SECURITY_KEY_SIZE == 0);	
 

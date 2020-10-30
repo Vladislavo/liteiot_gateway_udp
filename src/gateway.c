@@ -16,6 +16,7 @@
 #include <errno.h>
 
 #include "gateway_protocol.h"
+#include "gateway_telemetry_protocol.h"
 #include "base64.h"
 #include "task_queue.h"
 #include "json.h"
@@ -28,14 +29,17 @@
 #define GATEWAY_PROTOCOL_APP_KEY_SIZE	8
 #define DEVICE_DATA_MAX_LENGTH		256
 #define GATEWAY_SECURE_KEY_SIZE		16
+#define GATEWAY_ID_SIZE			6
 
 
 typedef struct {
-	char 		gw_id[17 +1];
+	uint8_t 	gw_id[GATEWAY_ID_SIZE];
 	uint8_t 	gw_secure_key[GATEWAY_SECURE_KEY_SIZE];
 	uint16_t 	gw_port;
 	char 		db_type[20];
 	uint32_t	telemetry_send_period;
+	char 		platform_gw_manager_ip[20];
+	uint16_t 	platform_gw_manager_port;
 } gw_conf_t;
 
 typedef struct {
@@ -80,25 +84,12 @@ static int read_db_conf(const char *db_conf_file_path, db_conf_t *db_conf);
 
 void process_packet(void *request);
 
+uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *db_conf_file_path);
+void	*gateway_mngr(void *gw_conf);
+
 int send_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t pck_size);
 int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck_size);
 
-void packet_encode(
-	const uint8_t *app_key,
-	const uint8_t dev_id, 
-	const gateway_protocol_packet_type_t p_type, 
-	const uint8_t payload_length,
-	const uint8_t *payload,
-	uint8_t *packet_length,
-	uint8_t *packet);
-uint8_t packet_decode(
-	uint8_t *app_key,
-	uint8_t *dev_id,
-	gateway_protocol_packet_type_t *ptype,
-	uint8_t *payload_length,
-	uint8_t *payload,
-	const uint8_t packet_length,
-	const uint8_t *packet);
 void gateway_protocol_data_send_payload_decode(
 	sensor_data_t *sensor_data, 
 	const uint8_t *payload, 
@@ -126,15 +117,31 @@ int main (int argc, char **argv) {
 	char *db_conninfo = (char *)malloc(512);
 	gcom_ch_t gch;
 	task_queue_t *tq;
+	pthread_t gw_mngr;
+	sigset_t sigset;
+
+	sigemptyset(&sigset);
+	/* SIGINT for finishing gateway task */	
+	sigaddset(&sigset, SIGINT);
+	/* SIGALRM for gateway manager thread */	
+	sigaddset(&sigset, SIGALRM);
+	/* block all other signals */
+	sigprocmask(SIG_BLOCK, &sigset, NULL);
 
 	signal(SIGINT, ctrc_handler);
 	
-	if(read_gw_conf(gw_conf_file, gw_conf)) {
+	if (read_gw_conf(gw_conf_file, gw_conf)) {
 		return EXIT_FAILURE;
 	}
 
-	//gw auth, then
-	if(read_db_conf(db_conf_file, db_conf)) {
+	gateway_telemetry_protocol_init(gw_conf->gw_id, gw_conf->gw_secure_key);
+
+	if (!gateway_auth(gw_conf, db_conf_file)) {
+		fprintf(stderr, "Gateway authentication failure.");
+		return EXIT_FAILURE;
+	}
+
+	if (read_db_conf(db_conf_file, db_conf)) {
 		return EXIT_FAILURE;
 	}
 	
@@ -179,6 +186,11 @@ int main (int argc, char **argv) {
 	if (bind(gch.server_desc, (struct sockaddr *) &gch.server, sizeof(gch.server)) < 0) {
 		perror("binding error");
 		free(gw_conf);
+		return EXIT_FAILURE;
+	}
+
+	if (pthread_create(&gw_mngr, NULL, gateway_mngr, gw_conf)) {
+		fprintf(stderr, "Failed to create gateway manager thread.");
 		return EXIT_FAILURE;
 	}
 
@@ -401,6 +413,75 @@ void process_packet(void *request) {
 	free(req);
 }
 
+uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *db_conf_file_path) {
+	int sockfd;
+	struct sockaddr_in platformaddr;
+	uint8_t buffer[1024];
+	uint16_t buffer_length = 0;
+	uint8_t payload_buffer[1024];
+	uint16_t payload_buffer_length = 0;
+	FILE *fp;
+
+	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		return 0;
+	}
+
+	memset(&platformaddr, 0x0, sizeof(platformaddr));
+
+	platformaddr.sin_family = AF_INET;
+	platformaddr.sin_addr.s_addr = inet_addr(gw_conf->platform_gw_manager_ip);
+	platformaddr.sin_port = htons(gw_conf->platform_gw_manager_port);
+	
+	if (connect(sockfd, (struct sockaddr *)&platformaddr, sizeof(platformaddr))) {
+		return 0;
+	}
+
+	gateway_telemetry_protocol_encode_packet(buffer, 0, GATEWAY_TELEMETRY_PROTOCOL_AUTH, buffer, &buffer_length);
+	write(sockfd, buffer, buffer_length);
+	
+	buffer_length = read(sockfd, buffer, sizeof(buffer));
+	gateway_telemetry_protocol_packet_type_t pt;
+	if (!gateway_telemetry_protocol_decode_packet(payload_buffer, &payload_buffer_length, &pt, buffer, buffer_length)) {
+		return 0;
+	}
+
+	// write db_conf into file
+	fp = fopen(db_conf_file_path, "w");
+	fwrite(payload_buffer, payload_buffer_length, 1, fp);
+	fclose(fp);
+
+	return 1;
+}
+
+void * gateway_mngr(void *gw_conf) {
+	struct itimerval tval;
+	uint32_t period = ((gw_conf_t *)gw_conf)->telemetry_send_period;
+	sigset_t alarm_msk;
+	int sig;
+
+	sigemptyset(&alarm_msk);
+	sigaddset(&alarm_msk, SIGALRM);
+	pthread_sigmask(SIG_BLOCK, &alarm_msk, NULL);
+
+	tval.it_value.tv_sec = period;
+	tval.it_value.tv_usec = 0;
+	tval.it_interval.tv_sec = period;
+	tval.it_interval.tv_usec = 0;
+
+	if (setitimer(ITIMER_REAL, &tval, NULL)) {
+		perror("Failed to set itimer");
+		return NULL;
+	}
+
+	while (1) {
+		// get utc
+		// create applications and devices serving log
+		// flush utc and log into a query
+		printf("periodic action done!\n");
+		sigwait(&alarm_msk, &sig);
+	}
+}
+
 void gateway_protocol_data_send_payload_decode(
 	sensor_data_t *sensor_data, 
 	const uint8_t *payload, 
@@ -491,16 +572,29 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 
 
 static void process_gw_conf(json_value* value, gw_conf_t *gw_conf) {
-	strncpy(gw_conf->gw_id, value->u.object.values[0].value->u.string.ptr, sizeof(gw_conf->gw_id));
-	strncpy(gw_conf->gw_secure_key, value->u.object.values[1].value->u.string.ptr, sizeof(gw_conf->gw_secure_key));
+	/* bad practice. must add checks for the EUI string */
+	char buffer[128];
+	strncpy(buffer, value->u.object.values[0].value->u.string.ptr, sizeof(buffer));
+	sscanf(buffer, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &gw_conf->gw_id[0], &gw_conf->gw_id[1], &gw_conf->gw_id[2],
+							&gw_conf->gw_id[3], &gw_conf->gw_id[4], &gw_conf->gw_id[5]
+	);
+	strncpy(buffer, value->u.object.values[1].value->u.string.ptr, sizeof(buffer));
+	sscanf(buffer, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
+			&gw_conf->gw_secure_key[0], &gw_conf->gw_secure_key[1], &gw_conf->gw_secure_key[2], &gw_conf->gw_secure_key[3],
+			&gw_conf->gw_secure_key[4], &gw_conf->gw_secure_key[5], &gw_conf->gw_secure_key[6], &gw_conf->gw_secure_key[7],
+			&gw_conf->gw_secure_key[8], &gw_conf->gw_secure_key[9], &gw_conf->gw_secure_key[10], &gw_conf->gw_secure_key[11],
+			&gw_conf->gw_secure_key[12], &gw_conf->gw_secure_key[13], &gw_conf->gw_secure_key[14], &gw_conf->gw_secure_key[15]
+	);
 	gw_conf->gw_port = value->u.object.values[2].value->u.integer;
 	strncpy(gw_conf->db_type, value->u.object.values[3].value->u.string.ptr, sizeof(gw_conf->db_type));
 	gw_conf->telemetry_send_period = value->u.object.values[4].value->u.integer;
+	strncpy(gw_conf->platform_gw_manager_ip, value->u.object.values[5].value->u.string.ptr, sizeof(gw_conf->platform_gw_manager_ip));
+	gw_conf->platform_gw_manager_port = value->u.object.values[6].value->u.integer;
 }
 
 static void process_db_conf(json_value* value, db_conf_t *db_conf) {
 	strncpy(db_conf->addr, value->u.object.values[0].value->u.string.ptr, sizeof(db_conf->addr));
-	db_conf->port = value->u.object.values[1].value->u.integer;
+	db_conf->port = atoi(value->u.object.values[1].value->u.string.ptr);
 	strncpy(db_conf->db_name, value->u.object.values[2].value->u.string.ptr, sizeof(db_conf->db_name));
 	strncpy(db_conf->user_name, value->u.object.values[3].value->u.string.ptr, sizeof(db_conf->user_name));
 	strncpy(db_conf->user_pass, value->u.object.values[4].value->u.string.ptr, sizeof(db_conf->user_pass));

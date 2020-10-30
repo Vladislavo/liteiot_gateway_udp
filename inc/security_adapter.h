@@ -14,17 +14,17 @@ extern "C" {
 void security_adapter_encrypt(
 	const uint8_t *secure_key,
 	uint8_t *encrypted_payload, 
-	uint8_t *encrypted_payload_length,
+	uint16_t *encrypted_payload_length,
 	uint8_t *decrypted_payload,
-	uint8_t decrypted_payload_length);
+	uint16_t decrypted_payload_length);
 
 
 void security_adapter_decrypt(
 	const uint8_t *secure_key,
 	uint8_t *encrypted_payload, 
-	uint8_t encrypted_payload_length,
+	uint16_t encrypted_payload_length,
 	uint8_t *decrypted_payload,
-	uint8_t *decrypted_payload_length);
+	uint16_t *decrypted_payload_length);
 
 
 #ifdef __cplusplus
