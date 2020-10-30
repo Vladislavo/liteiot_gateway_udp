@@ -121,11 +121,8 @@ int main (int argc, char **argv) {
 	sigset_t sigset;
 
 	sigemptyset(&sigset);
-	/* SIGINT for finishing gateway task */	
-	sigaddset(&sigset, SIGINT);
-	/* SIGALRM for gateway manager thread */	
+	/* block SIGALRM for gateway manager thread */
 	sigaddset(&sigset, SIGALRM);
-	/* block all other signals */
 	sigprocmask(SIG_BLOCK, &sigset, NULL);
 
 	signal(SIGINT, ctrc_handler);
@@ -461,7 +458,6 @@ void * gateway_mngr(void *gw_conf) {
 
 	sigemptyset(&alarm_msk);
 	sigaddset(&alarm_msk, SIGALRM);
-	pthread_sigmask(SIG_BLOCK, &alarm_msk, NULL);
 
 	tval.it_value.tv_sec = period;
 	tval.it_value.tv_usec = 0;
