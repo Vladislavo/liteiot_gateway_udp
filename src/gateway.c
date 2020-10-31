@@ -23,7 +23,6 @@
 #include "aes.h"
 #include "gw_stat_linked_list.h"
 
-#define NTHREAD_MAX			10
 
 #define TIMEDATE_LENGTH			32
 #define PEND_SEND_RETRIES_MAX		5
@@ -34,22 +33,28 @@
 
 
 typedef struct {
+	char 		db_addr[15+1];
+	uint16_t 	db_port;
+	char 		db_name[32];
+	char 		db_user_name[32];
+	char 		db_user_pass[32];
+	uint32_t	telemetry_send_period;
+} dynamic_conf_t;
+
+typedef struct {
 	uint8_t 	gw_id[GATEWAY_ID_SIZE];
 	uint8_t 	gw_secure_key[GATEWAY_SECURE_KEY_SIZE];
 	uint16_t 	gw_port;
 	char 		db_type[20];
-	uint32_t	telemetry_send_period;
 	char 		platform_gw_manager_ip[20];
 	uint16_t 	platform_gw_manager_port;
-} gw_conf_t;
+	uint8_t 	thread_pool_size;
+} static_conf_t;
 
 typedef struct {
-	char 		addr[15+1];
-	uint16_t 	port;
-	char 		db_name[32];
-	char 		user_name[32];
-	char 		user_pass[32];
-} db_conf_t;
+	static_conf_t  static_conf;
+	dynamic_conf_t dynamic_conf;
+} gw_conf_t;
 
 typedef struct {
 	uint32_t utc;
@@ -79,17 +84,17 @@ typedef struct {
 	uint64_t errors_count;
 } gw_stat_t;
 
-static const char * gw_conf_file = "gateway.conf";
-static const char * db_conf_file = "db.conf";
-static void process_gw_conf(json_value* value, gw_conf_t *gw_conf);
-static void process_db_conf(json_value* value, db_conf_t *db_conf);
+static const char * static_conf_file  = "conf/static.conf";
+static const char * dynamic_conf_file = "conf/dynamic.conf";
+static int read_static_conf (const char *static_conf_file_path,  gw_conf_t *gw_conf);
+static int read_dynamic_conf(const char *dynamic_conf_file_path, gw_conf_t *gw_conf);
+static void process_static_conf (json_value* value, static_conf_t  *static_conf);
+static void process_dynamic_conf(json_value* value, dynamic_conf_t *dynamic_conf);
 static json_value * read_json_conf(const char *file_path);
-static int read_gw_conf(const char *gw_conf_file_path, gw_conf_t *gw_conf);
-static int read_db_conf(const char *db_conf_file_path, db_conf_t *db_conf);
 
 void process_packet(void *request);
 
-uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *db_conf_file_path);
+uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *dynamic_conf_file_path);
 void	*gateway_mngr(void *gw_conf);
 
 int send_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t pck_size);
@@ -121,7 +126,6 @@ gw_stat_t gw_stat;
 
 int main (int argc, char **argv) {
 	gw_conf_t *gw_conf = (gw_conf_t *)malloc(sizeof(gw_conf_t));
-	db_conf_t *db_conf = (db_conf_t *)malloc(sizeof(db_conf_t));
 	char *db_conninfo = (char *)malloc(512);
 	gcom_ch_t gch;
 	task_queue_t *tq;
@@ -137,43 +141,45 @@ int main (int argc, char **argv) {
 
 	signal(SIGINT, ctrc_handler);
 	
-	if (read_gw_conf(gw_conf_file, gw_conf)) {
+	if (read_static_conf(static_conf_file, gw_conf)) {
 		return EXIT_FAILURE;
 	}
 
-	gateway_telemetry_protocol_init(gw_conf->gw_id, gw_conf->gw_secure_key);
+	gateway_telemetry_protocol_init(gw_conf->static_conf.gw_id, gw_conf->static_conf.gw_secure_key);
 
-	if (!gateway_auth(gw_conf, db_conf_file)) {
+	if (!gateway_auth(gw_conf, dynamic_conf_file)) {
 		fprintf(stderr, "Gateway authentication failure.");
 		return EXIT_FAILURE;
 	}
 
-	if (read_db_conf(db_conf_file, db_conf)) {
+	if (read_dynamic_conf(dynamic_conf_file, gw_conf)) {
+		fprintf(stderr, "Read dynamic configuration failure.");
 		return EXIT_FAILURE;
 	}
 	
 	snprintf(db_conninfo, 512, 
 			"hostaddr=%s port=%d dbname=%s user=%s password=%s", 
-			db_conf->addr,
-			db_conf->port,
-			db_conf->db_name,
-			db_conf->user_name,
-			db_conf->user_pass);
+			gw_conf->dynamic_conf.db_addr,
+			gw_conf->dynamic_conf.db_port,
+			gw_conf->dynamic_conf.db_name,
+			gw_conf->dynamic_conf.db_user_name,
+			gw_conf->dynamic_conf.db_user_pass);
 	
 	printf("db_conf : '%s'\n", db_conninfo);
 
 	conn = PQconnectdb(db_conninfo);
 	
 	snprintf(db_conninfo, 512, 
-			"id=%s secure_key=%s port=%d type=%s telemetry_send_period=%d\n", 
-			gw_conf->gw_id,
-			gw_conf->gw_secure_key,
-			gw_conf->gw_port,
-			gw_conf->db_type,
-			gw_conf->telemetry_send_period);
+			"id=%s secure_key=%s port=%d type=%s thread_pool_size=%d telemetry_send_period=%d\n", 
+			gw_conf->static_conf.gw_id,
+			gw_conf->static_conf.gw_secure_key,
+			gw_conf->static_conf.gw_port,
+			gw_conf->static_conf.db_type,
+			gw_conf->static_conf.thread_pool_size,
+			gw_conf->dynamic_conf.telemetry_send_period);
 	printf("gw_conf : '%s'\n", db_conninfo);
-	
 	free(db_conninfo);
+
 	if (PQstatus(conn) == CONNECTION_BAD) {
 		fprintf(stderr,"connection to db error: %s\n", PQerrorMessage(conn));
 		free(gw_conf);
@@ -187,7 +193,7 @@ int main (int argc, char **argv) {
 	}
 
 	gch.server.sin_family 		= AF_INET;
-	gch.server.sin_port		= htons(gw_conf->gw_port);
+	gch.server.sin_port		= htons(gw_conf->static_conf.gw_port);
 	gch.server.sin_addr.s_addr 	= INADDR_ANY;
 
 	if (bind(gch.server_desc, (struct sockaddr *) &gch.server, sizeof(gch.server)) < 0) {
@@ -201,7 +207,7 @@ int main (int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	if(!(tq = task_queue_create(NTHREAD_MAX))) {
+	if(!(tq = task_queue_create(gw_conf->static_conf.thread_pool_size))) {
 		perror("task_queue creation error");
 		free(gw_conf);
 		return EXIT_FAILURE;
@@ -230,7 +236,6 @@ int main (int argc, char **argv) {
 	}
 
 	free(gw_conf);
-	free(db_conf);
 	pthread_mutex_destroy(&mutex);
 	close(gch.server_desc);
 	PQfinish(conn);
@@ -431,7 +436,7 @@ void process_packet(void *request) {
 	free(req);
 }
 
-uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *db_conf_file_path) {
+uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *dynamic_conf_file_path) {
 	int sockfd;
 	struct sockaddr_in platformaddr;
 	uint8_t buffer[1024];
@@ -447,8 +452,8 @@ uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *db_conf_file_path) {
 	memset(&platformaddr, 0x0, sizeof(platformaddr));
 
 	platformaddr.sin_family = AF_INET;
-	platformaddr.sin_addr.s_addr = inet_addr(gw_conf->platform_gw_manager_ip);
-	platformaddr.sin_port = htons(gw_conf->platform_gw_manager_port);
+	platformaddr.sin_addr.s_addr = inet_addr(gw_conf->static_conf.platform_gw_manager_ip);
+	platformaddr.sin_port = htons(gw_conf->static_conf.platform_gw_manager_port);
 	
 	if (connect(sockfd, (struct sockaddr *)&platformaddr, sizeof(platformaddr))) {
 		return 0;
@@ -464,7 +469,7 @@ uint8_t gateway_auth(const gw_conf_t *gw_conf, const char *db_conf_file_path) {
 	}
 
 	// write db_conf into file
-	fp = fopen(db_conf_file_path, "w");
+	fp = fopen(dynamic_conf_file_path, "w");
 	fwrite(payload_buffer, payload_buffer_length, 1, fp);
 	fclose(fp);
 
@@ -488,9 +493,9 @@ void * gateway_mngr(void *gw_cnf) {
 	sigemptyset(&alarm_msk);
 	sigaddset(&alarm_msk, SIGALRM);
 
-	tval.it_value.tv_sec = gw_conf->telemetry_send_period;
+	tval.it_value.tv_sec = gw_conf->dynamic_conf.telemetry_send_period;
 	tval.it_value.tv_usec = 0;
-	tval.it_interval.tv_sec = gw_conf->telemetry_send_period;
+	tval.it_interval.tv_sec = gw_conf->dynamic_conf.telemetry_send_period;
 	tval.it_interval.tv_usec = 0;
 
 	if (setitimer(ITIMER_REAL, &tval, NULL)) {
@@ -498,7 +503,7 @@ void * gateway_mngr(void *gw_cnf) {
 		return NULL;
 	}
 
-	base64_encode(gw_conf->gw_id, GATEWAY_ID_SIZE, b64_gwid);
+	base64_encode(gw_conf->static_conf.gw_id, GATEWAY_ID_SIZE, b64_gwid);
 	
 	while (1) {
 		// get utc
@@ -619,33 +624,34 @@ int recv_gcom_ch(gcom_ch_t *gch, uint8_t *pck, uint8_t *pck_length, uint16_t pck
 }
 
 
-static void process_gw_conf(json_value* value, gw_conf_t *gw_conf) {
+static void process_static_conf(json_value* value, static_conf_t *st_conf) {
 	/* bad practice. must add checks for the EUI string */
 	char buffer[128];
 	strncpy(buffer, value->u.object.values[0].value->u.string.ptr, sizeof(buffer));
-	sscanf(buffer, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &gw_conf->gw_id[0], &gw_conf->gw_id[1], &gw_conf->gw_id[2],
-							&gw_conf->gw_id[3], &gw_conf->gw_id[4], &gw_conf->gw_id[5]
+	sscanf(buffer, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &st_conf->gw_id[0], &st_conf->gw_id[1], &st_conf->gw_id[2],
+							&st_conf->gw_id[3], &st_conf->gw_id[4], &st_conf->gw_id[5]
 	);
 	strncpy(buffer, value->u.object.values[1].value->u.string.ptr, sizeof(buffer));
 	sscanf(buffer, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
-			&gw_conf->gw_secure_key[0], &gw_conf->gw_secure_key[1], &gw_conf->gw_secure_key[2], &gw_conf->gw_secure_key[3],
-			&gw_conf->gw_secure_key[4], &gw_conf->gw_secure_key[5], &gw_conf->gw_secure_key[6], &gw_conf->gw_secure_key[7],
-			&gw_conf->gw_secure_key[8], &gw_conf->gw_secure_key[9], &gw_conf->gw_secure_key[10], &gw_conf->gw_secure_key[11],
-			&gw_conf->gw_secure_key[12], &gw_conf->gw_secure_key[13], &gw_conf->gw_secure_key[14], &gw_conf->gw_secure_key[15]
+			&st_conf->gw_secure_key[0], &st_conf->gw_secure_key[1], &st_conf->gw_secure_key[2], &st_conf->gw_secure_key[3],
+			&st_conf->gw_secure_key[4], &st_conf->gw_secure_key[5], &st_conf->gw_secure_key[6], &st_conf->gw_secure_key[7],
+			&st_conf->gw_secure_key[8], &st_conf->gw_secure_key[9], &st_conf->gw_secure_key[10], &st_conf->gw_secure_key[11],
+			&st_conf->gw_secure_key[12], &st_conf->gw_secure_key[13], &st_conf->gw_secure_key[14], &st_conf->gw_secure_key[15]
 	);
-	gw_conf->gw_port = value->u.object.values[2].value->u.integer;
-	strncpy(gw_conf->db_type, value->u.object.values[3].value->u.string.ptr, sizeof(gw_conf->db_type));
-	gw_conf->telemetry_send_period = value->u.object.values[4].value->u.integer;
-	strncpy(gw_conf->platform_gw_manager_ip, value->u.object.values[5].value->u.string.ptr, sizeof(gw_conf->platform_gw_manager_ip));
-	gw_conf->platform_gw_manager_port = value->u.object.values[6].value->u.integer;
+	st_conf->gw_port = value->u.object.values[2].value->u.integer;
+	strncpy(st_conf->db_type, value->u.object.values[3].value->u.string.ptr, sizeof(st_conf->db_type));
+	strncpy(st_conf->platform_gw_manager_ip, value->u.object.values[4].value->u.string.ptr, sizeof(st_conf->platform_gw_manager_ip));
+	st_conf->platform_gw_manager_port = value->u.object.values[5].value->u.integer;
+	st_conf->thread_pool_size = value->u.object.values[6].value->u.integer;
 }
 
-static void process_db_conf(json_value* value, db_conf_t *db_conf) {
-	strncpy(db_conf->addr, value->u.object.values[0].value->u.string.ptr, sizeof(db_conf->addr));
-	db_conf->port = atoi(value->u.object.values[1].value->u.string.ptr);
-	strncpy(db_conf->db_name, value->u.object.values[2].value->u.string.ptr, sizeof(db_conf->db_name));
-	strncpy(db_conf->user_name, value->u.object.values[3].value->u.string.ptr, sizeof(db_conf->user_name));
-	strncpy(db_conf->user_pass, value->u.object.values[4].value->u.string.ptr, sizeof(db_conf->user_pass));
+static void process_dynamic_conf(json_value* value, dynamic_conf_t *dyn_conf) {
+	strncpy(dyn_conf->db_addr, value->u.object.values[0].value->u.string.ptr, sizeof(dyn_conf->db_addr));
+	dyn_conf->db_port = atoi(value->u.object.values[1].value->u.string.ptr);
+	strncpy(dyn_conf->db_name, value->u.object.values[2].value->u.string.ptr, sizeof(dyn_conf->db_name));
+	strncpy(dyn_conf->db_user_name, value->u.object.values[3].value->u.string.ptr, sizeof(dyn_conf->db_user_name));
+	strncpy(dyn_conf->db_user_pass, value->u.object.values[4].value->u.string.ptr, sizeof(dyn_conf->db_user_pass));
+	dyn_conf->telemetry_send_period = value->u.object.values[5].value->u.integer;
 }
 
 static json_value * read_json_conf(const char *file_path) {
@@ -695,28 +701,28 @@ static json_value * read_json_conf(const char *file_path) {
 	return jvalue;
 }
 
-static int read_gw_conf(const char *gw_conf_file_path, gw_conf_t *gw_conf) {
+static int read_static_conf(const char *static_conf_file_path, gw_conf_t *gw_conf) {
 	json_value *jvalue;
 	
-	jvalue = read_json_conf(gw_conf_file_path);
+	jvalue = read_json_conf(static_conf_file_path);
 	if (!jvalue) {
 		return 1;
 	}
-	process_gw_conf(jvalue, gw_conf);
+	process_static_conf(jvalue, &gw_conf->static_conf);
 
 	json_value_free(jvalue);
 	
 	return 0;
 }
 
-static int read_db_conf(const char *db_conf_file_path, db_conf_t *db_conf) {
+static int read_dynamic_conf(const char *dynamic_conf_file_path, gw_conf_t *gw_conf) {
 	json_value *jvalue;
 	
-	jvalue = read_json_conf(db_conf_file_path);
+	jvalue = read_json_conf(dynamic_conf_file_path);
 	if (!jvalue) {
 		return 1;
 	}
-	process_db_conf(jvalue, db_conf);
+	process_dynamic_conf(jvalue, &gw_conf->dynamic_conf);
 
 	json_value_free(jvalue);
 	
